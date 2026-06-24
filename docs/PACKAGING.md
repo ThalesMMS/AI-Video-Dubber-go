@@ -8,6 +8,7 @@ Disponibilizar o `AI-Video-Dubber-go` como um aplicativo `.app` para macOS que a
 
 - A resolução de runtime embarcado foi implementada em `internal/config`, com suporte a `.app` e ao tarball headless do CLI.
 - `executil.Runner` agora injeta os diretórios embarcados no `PATH` e redireciona chamadas a `ffmpeg` e `ffprobe` para os binários do bundle.
+- O runtime cria um link curto em cache para `piper/espeak-ng-data` e define `ESPEAK_DATA_PATH`, evitando a falha do `espeakbridge` com caminhos longos dentro do `.app`.
 - `internal/environment` pula a criação de `.venv` quando o Python embarcado está em uso e valida que Whisper e Piper estão importáveis.
 - `scripts/package-macos.sh` gera `dist/AI-Video-Dubber.app` e `dist/AI-Video-Dubber-cli-darwin-<arch>.tar.gz`.
 - `make package-macos` executa o empacotamento completo; `make package-cli` gera apenas o tarball do CLI.

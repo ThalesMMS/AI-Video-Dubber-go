@@ -186,6 +186,10 @@ func (c Config) ToolPaths() map[string]string {
 
 // RuntimeEnv returns environment overrides needed by embedded subprocesses.
 func (c Config) RuntimeEnv() []string {
+	env := make([]string, 0, 2)
+	if espeakDataPath := runtimeEspeakDataPath(c.PythonBin); espeakDataPath != "" {
+		env = append(env, "ESPEAK_DATA_PATH="+espeakDataPath)
+	}
 	dirs := make([]string, 0, 2)
 	addDir := func(path string) {
 		path = strings.TrimSpace(path)
@@ -210,7 +214,64 @@ func (c Config) RuntimeEnv() []string {
 	if current := os.Getenv("PATH"); current != "" {
 		pathParts = append(pathParts, current)
 	}
-	return []string{"PATH=" + strings.Join(pathParts, string(os.PathListSeparator))}
+	env = append(env, "PATH="+strings.Join(pathParts, string(os.PathListSeparator)))
+	return env
+}
+
+func runtimeEspeakDataPath(pythonBin string) string {
+	dataDir, ok := bundledEspeakDataDir(pythonBin)
+	if !ok {
+		return ""
+	}
+	if shortDir, ok := shortEspeakDataDir(dataDir); ok {
+		return shortDir
+	}
+	return dataDir
+}
+
+func bundledEspeakDataDir(pythonBin string) (string, bool) {
+	if !IsBundledPython(pythonBin) {
+		return "", false
+	}
+	pythonRoot := filepath.Dir(filepath.Dir(filepath.Clean(pythonBin)))
+	matches, err := filepath.Glob(filepath.Join(pythonRoot, "lib", "python*", "site-packages", "piper", "espeak-ng-data"))
+	if err != nil {
+		return "", false
+	}
+	for _, match := range matches {
+		if fileExists(filepath.Join(match, "phontab")) {
+			return match, true
+		}
+	}
+	return "", false
+}
+
+func shortEspeakDataDir(target string) (string, bool) {
+	cacheDir, err := os.UserCacheDir()
+	if err != nil || cacheDir == "" {
+		return "", false
+	}
+	linkParent := filepath.Join(cacheDir, "AI-Video-Dubber", "runtime")
+	linkPath := filepath.Join(linkParent, "espeak-ng-data")
+	if err := os.MkdirAll(linkParent, 0o755); err != nil {
+		return "", false
+	}
+	if info, err := os.Lstat(linkPath); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			if resolved, err := filepath.EvalSymlinks(linkPath); err == nil && resolved == target {
+				return linkPath, true
+			}
+		}
+		if err := os.RemoveAll(linkPath); err != nil {
+			return "", false
+		}
+	} else if !os.IsNotExist(err) {
+		return "", false
+	}
+	if err := os.Symlink(target, linkPath); err != nil {
+		return "", false
+	}
+	return linkPath, true
 }
 
 func bundledResources() (BundledResources, bool) {

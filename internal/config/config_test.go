@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -100,4 +101,57 @@ func TestRuntimeEnvPrependsBundledResourceDirectories(t *testing.T) {
 	if len(env) != 1 || env[0] != want {
 		t.Fatalf("RuntimeEnv() = %#v, want %#v", env, []string{want})
 	}
+}
+
+func TestRuntimeEnvSetsShortEspeakDataPathForBundledPython(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink test")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := t.TempDir()
+	pythonRoot := filepath.Join(dir, "AI-Video-Dubber.app", "Contents", "Resources", "python")
+	python := filepath.Join(pythonRoot, "bin", "python3")
+	espeakData := filepath.Join(pythonRoot, "lib", "python3.12", "site-packages", "piper", "espeak-ng-data")
+	for _, path := range []string{python, filepath.Join(espeakData, "phontab")} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("test"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	env := (Config{PythonBin: python}).RuntimeEnv()
+	espeakPath := envValue(env, "ESPEAK_DATA_PATH")
+	if espeakPath == "" {
+		t.Fatalf("RuntimeEnv() = %#v, missing ESPEAK_DATA_PATH", env)
+	}
+	if espeakPath == espeakData {
+		t.Fatalf("ESPEAK_DATA_PATH = %q, want short relocated path", espeakPath)
+	}
+	resolved, err := filepath.EvalSymlinks(espeakPath)
+	if err != nil {
+		t.Fatalf("resolve ESPEAK_DATA_PATH: %v", err)
+	}
+	wantResolved, err := filepath.EvalSymlinks(espeakData)
+	if err != nil {
+		t.Fatalf("resolve bundled espeak data: %v", err)
+	}
+	if resolved != wantResolved {
+		t.Fatalf("ESPEAK_DATA_PATH resolves to %q, want %q", resolved, wantResolved)
+	}
+	if _, err := os.Stat(filepath.Join(espeakPath, "phontab")); err != nil {
+		t.Fatalf("phontab through ESPEAK_DATA_PATH: %v", err)
+	}
+}
+
+func envValue(env []string, name string) string {
+	prefix := name + "="
+	for _, item := range env {
+		if strings.HasPrefix(item, prefix) {
+			return strings.TrimPrefix(item, prefix)
+		}
+	}
+	return ""
 }
