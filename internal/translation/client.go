@@ -1,0 +1,295 @@
+// Package translation translates SRT cues through an OpenAI-compatible API.
+package translation
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"regexp"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/ai-video-dubber/ai-video-dubber-go/internal/srt"
+)
+
+var taggedLine = regexp.MustCompile(`^\[(\d+)]\s*(.*)$`)
+
+// LogFunc receives progress and warning messages.
+type LogFunc func(string)
+
+// Client calls an OpenAI-compatible /v1 API.
+type Client struct {
+	APIBase    string
+	APIKey     string
+	Model      string
+	HTTPClient *http.Client
+	Log        LogFunc
+}
+
+// TranslateFile translates the text of each SRT cue while preserving timing.
+func (c *Client) TranslateFile(ctx context.Context, inputPath, outputPath, targetLanguage string, batchSize int) error {
+	if err := validateAPIBase(c.APIBase); err != nil {
+		return err
+	}
+	if strings.TrimSpace(targetLanguage) == "" {
+		return fmt.Errorf("target language is empty")
+	}
+	cues, err := srt.ReadFile(inputPath)
+	if err != nil {
+		return err
+	}
+	if batchSize <= 0 {
+		batchSize = 15
+	}
+	model, err := c.resolveModel(ctx)
+	if err != nil {
+		c.logf("Warning: model auto-detection failed (%v); using 'default'.", err)
+		model = "default"
+	}
+	c.logf("API: %s  Model: %s", strings.TrimRight(c.APIBase, "/"), model)
+	c.logf("Parsed %d subtitle entries from %s", len(cues), inputPath)
+	c.logf("Target language: %s", targetLanguage)
+
+	for start := 0; start < len(cues); start += batchSize {
+		end := start + batchSize
+		if end > len(cues) {
+			end = len(cues)
+		}
+		texts := make([]string, end-start)
+		for index := range texts {
+			texts[index] = cues[start+index].Text
+		}
+		c.logf("Translating entries %d–%d of %d...", start+1, end, len(cues))
+		translated, err := c.translateBatch(ctx, model, targetLanguage, texts)
+		if err != nil {
+			return fmt.Errorf("translate subtitle batch %d-%d: %w", start+1, end, err)
+		}
+		for index, text := range translated {
+			cues[start+index].Text = text
+		}
+	}
+	if err := srt.WriteFile(outputPath, cues); err != nil {
+		return err
+	}
+	c.logf("Done → %s", outputPath)
+	return nil
+}
+
+func (c *Client) resolveModel(ctx context.Context) (string, error) {
+	if model := strings.TrimSpace(c.Model); model != "" {
+		return model, nil
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, APIURL(c.APIBase, "models"), nil)
+	if err != nil {
+		return "", err
+	}
+	c.setHeaders(request)
+	client := c.client(10 * time.Second)
+	response, err := client.Do(request)
+	if err != nil {
+		return "", err
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return "", responseError(response)
+	}
+	var payload struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, 4<<20)).Decode(&payload); err != nil {
+		return "", err
+	}
+	if len(payload.Data) == 0 || strings.TrimSpace(payload.Data[0].ID) == "" {
+		return "", fmt.Errorf("the API returned no models")
+	}
+	c.logf("Auto-detected model: %s", payload.Data[0].ID)
+	return payload.Data[0].ID, nil
+}
+
+func (c *Client) translateBatch(ctx context.Context, model, targetLanguage string, texts []string) ([]string, error) {
+	var numbered strings.Builder
+	for index, text := range texts {
+		fmt.Fprintf(&numbered, "[%d] %s\n", index, strings.TrimSpace(text))
+	}
+	prompt := "You are a professional subtitle translator. " +
+		"Translate the following English subtitle lines to " + targetLanguage + ". " +
+		"Keep each line's numbering tag [N] exactly as-is. " +
+		"Output ONLY the translated lines, one per original, preserving the [N] tags. " +
+		"Do NOT add any explanation or extra text.\n\n" + strings.TrimSpace(numbered.String())
+
+	payload := map[string]any{
+		"model":       model,
+		"messages":    []map[string]string{{"role": "user", "content": prompt}},
+		"temperature": 0.3,
+		"max_tokens":  4096,
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, APIURL(c.APIBase, "chat/completions"), bytes.NewReader(encoded))
+	if err != nil {
+		return nil, err
+	}
+	c.setHeaders(request)
+	request.Header.Set("Content-Type", "application/json")
+	response, err := c.client(120 * time.Second).Do(request)
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return nil, responseError(response)
+	}
+	var completion struct {
+		Choices []struct {
+			Message struct {
+				Content json.RawMessage `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, 16<<20)).Decode(&completion); err != nil {
+		return nil, fmt.Errorf("decode completion: %w", err)
+	}
+	if len(completion.Choices) == 0 {
+		return nil, fmt.Errorf("the API returned no completion choices")
+	}
+	content, err := decodeContent(completion.Choices[0].Message.Content)
+	if err != nil {
+		return nil, err
+	}
+	return c.parseTranslations(content, texts), nil
+}
+
+func decodeContent(raw json.RawMessage) (string, error) {
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		return strings.TrimSpace(text), nil
+	}
+	// Some OpenAI-compatible servers return typed content parts.
+	var parts []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(raw, &parts); err == nil {
+		var builder strings.Builder
+		for _, part := range parts {
+			if part.Text != "" {
+				builder.WriteString(part.Text)
+			}
+		}
+		if builder.Len() > 0 {
+			return strings.TrimSpace(builder.String()), nil
+		}
+	}
+	return "", fmt.Errorf("completion content was not textual")
+}
+
+func (c *Client) parseTranslations(reply string, originals []string) []string {
+	reply = strings.TrimSpace(reply)
+	if strings.HasPrefix(reply, "```") {
+		lines := strings.Split(strings.ReplaceAll(reply, "\r\n", "\n"), "\n")
+		if len(lines) > 0 && strings.HasPrefix(strings.TrimSpace(lines[0]), "```") {
+			lines = lines[1:]
+		}
+		if len(lines) > 0 && strings.HasPrefix(strings.TrimSpace(lines[len(lines)-1]), "```") {
+			lines = lines[:len(lines)-1]
+		}
+		reply = strings.Join(lines, "\n")
+	}
+
+	parsed := make(map[int]string, len(originals))
+	current := -1
+	for _, rawLine := range strings.Split(strings.ReplaceAll(reply, "\r\n", "\n"), "\n") {
+		line := strings.TrimSpace(rawLine)
+		if line == "" {
+			continue
+		}
+		match := taggedLine.FindStringSubmatch(line)
+		if match != nil {
+			index, err := strconv.Atoi(match[1])
+			if err != nil || index < 0 || index >= len(originals) {
+				current = -1
+				continue
+			}
+			current = index
+			parsed[index] = strings.TrimSpace(match[2])
+			continue
+		}
+		if current >= 0 {
+			parsed[current] = strings.TrimSpace(parsed[current] + " " + line)
+		}
+	}
+
+	translated := make([]string, len(originals))
+	for index, original := range originals {
+		if value := strings.TrimSpace(parsed[index]); value != "" {
+			translated[index] = value
+		} else {
+			c.logf("WARNING: missing translation for batch item [%d], keeping original", index)
+			translated[index] = original
+		}
+	}
+	return translated
+}
+
+func validateAPIBase(base string) error {
+	base = strings.TrimSpace(base)
+	parsed, err := url.Parse(base)
+	if err != nil || !parsed.IsAbs() || parsed.Opaque != "" || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return fmt.Errorf("invalid OpenAI-compatible API base URL %q", base)
+	}
+	if parsed.RawQuery != "" || parsed.Fragment != "" {
+		return fmt.Errorf("API base URL must not contain a query string or fragment: %q", base)
+	}
+	return nil
+}
+
+// APIURL appends an OpenAI route without duplicating /v1.
+func APIURL(base, route string) string {
+	base = strings.TrimRight(strings.TrimSpace(base), "/")
+	route = strings.TrimLeft(route, "/")
+	if strings.HasSuffix(strings.ToLower(base), "/v1") {
+		return base + "/" + route
+	}
+	return base + "/v1/" + route
+}
+
+func (c *Client) setHeaders(request *http.Request) {
+	if key := strings.TrimSpace(c.APIKey); key != "" {
+		request.Header.Set("Authorization", "Bearer "+key)
+	}
+}
+
+func (c *Client) client(timeout time.Duration) *http.Client {
+	if c.HTTPClient != nil {
+		clone := *c.HTTPClient
+		if clone.Timeout == 0 {
+			clone.Timeout = timeout
+		}
+		return &clone
+	}
+	return &http.Client{Timeout: timeout}
+}
+
+func (c *Client) logf(format string, args ...any) {
+	if c.Log != nil {
+		c.Log(fmt.Sprintf(format, args...))
+	}
+}
+
+func responseError(response *http.Response) error {
+	body, _ := io.ReadAll(io.LimitReader(response.Body, 64<<10))
+	message := strings.TrimSpace(string(body))
+	if message == "" {
+		message = response.Status
+	}
+	return fmt.Errorf("API request failed with HTTP %d: %s", response.StatusCode, message)
+}

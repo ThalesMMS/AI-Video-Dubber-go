@@ -1,0 +1,668 @@
+// Package tts generates synchronized local narration with Piper TTS.
+package tts
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"math"
+	"os"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strings"
+	"time"
+	"unicode/utf8"
+
+	"github.com/ai-video-dubber/ai-video-dubber-go/internal/audio"
+	"github.com/ai-video-dubber/ai-video-dubber-go/internal/executil"
+	"github.com/ai-video-dubber/ai-video-dubber-go/internal/srt"
+)
+
+var (
+	sentenceEnd     = regexp.MustCompile(`[.!?…:][\]\)"'”’]*\s*$`)
+	pauseEnd        = regexp.MustCompile(`[,;:!?….][\]\)"'”’]*\s*$`)
+	spaces          = regexp.MustCompile(`\s+`)
+	ellipsis        = regexp.MustCompile(`\.{3,}`)
+	decimal         = regexp.MustCompile(`(\d)[,.](\d)`)
+	spaceBeforePunc = regexp.MustCompile(`\s+([,.;:!?…])`)
+	frontEnd        = regexp.MustCompile(`(?i)\bfront-end\b`)
+)
+
+// Options controls synthesis grouping and timing correction.
+type Options struct {
+	LanguageCode             string
+	Speaker                  *int
+	SentenceSilence          float64
+	LengthScale              *float64
+	NoiseScale               *float64
+	NoiseW                   *float64
+	MinLengthScale           float64
+	MaxLengthScale           float64
+	MaxAtempo                float64
+	MaxGroupGap              time.Duration
+	MaxGroupDuration         time.Duration
+	MaxGroupChars            int
+	SentenceBreakGap         time.Duration
+	MinSentenceGroupDuration time.Duration
+	DisableTextNormalization bool
+	KeepTemp                 bool
+	ReportPath               string
+}
+
+// Defaults mirrors the quality-oriented settings of the Python implementation.
+func Defaults() Options {
+	return Options{
+		SentenceSilence:          0.04,
+		MinLengthScale:           0.72,
+		MaxLengthScale:           1.10,
+		MaxAtempo:                1.12,
+		MaxGroupGap:              350 * time.Millisecond,
+		MaxGroupDuration:         12 * time.Second,
+		MaxGroupChars:            300,
+		SentenceBreakGap:         180 * time.Millisecond,
+		MinSentenceGroupDuration: 3200 * time.Millisecond,
+	}
+}
+
+// Group is a sequence of nearby subtitle cues synthesized as one phrase.
+type Group struct {
+	ID    int
+	Cues  []srt.Cue
+	Text  string
+	Start time.Duration
+	End   time.Duration
+}
+
+// Duration returns the target audio slot for the group.
+func (g Group) Duration() time.Duration { return g.End - g.Start }
+
+// GroupReport contains per-group timing diagnostics compatible with the
+// Python implementation's optional JSON report.
+type GroupReport struct {
+	ID                int     `json:"gid"`
+	CueIndices        []int   `json:"cue_indices"`
+	StartSeconds      float64 `json:"start"`
+	EndSeconds        float64 `json:"end"`
+	TargetSeconds     float64 `json:"target_duration"`
+	Text              string  `json:"text"`
+	ChosenLengthScale float64 `json:"chosen_length_scale"`
+	RawSeconds        float64 `json:"raw_duration"`
+	SpeedupApplied    float64 `json:"speedup_applied"`
+	TrimmedFallback   bool    `json:"trimmed_fallback"`
+	SampleRate        int     `json:"sample_rate"`
+}
+
+// Prepare verifies Piper and downloads the selected voice if needed.
+func Prepare(ctx context.Context, runner executil.Runner, pythonExe, voice, dataDir string) error {
+	if err := ensurePiper(ctx, runner, pythonExe); err != nil {
+		return err
+	}
+	_, _, err := ensureVoice(ctx, runner, pythonExe, voice, dataDir)
+	return err
+}
+
+// Synthesize turns translated SRT or segments cues into one timeline-aligned
+// audio file.
+func Synthesize(
+	ctx context.Context,
+	runner executil.Runner,
+	pythonExe, inputPath, outputPath, voice, dataDir string,
+	options Options,
+) error {
+	options = normalizeOptions(options)
+	cues, err := srt.ReadTimestampedFile(inputPath)
+	if err != nil {
+		return err
+	}
+	if !options.DisableTextNormalization {
+		for index := range cues {
+			cues[index].Text = normalizeText(cues[index].Text, options.LanguageCode)
+		}
+	}
+	groups := GroupCues(cues, options)
+	if len(groups) == 0 {
+		return fmt.Errorf("no synthesis groups could be created")
+	}
+	runnerLog(runner, "Parsed %d cues → %d synthesis groups", len(cues), len(groups))
+	runnerLog(runner, "Input: %s", inputPath)
+	runnerLog(runner, "Output: %s", outputPath)
+	runnerLog(runner, "Voice: %s", voice)
+
+	if err := ensurePiper(ctx, runner, pythonExe); err != nil {
+		return err
+	}
+	modelPath, configPath, err := ensureVoice(ctx, runner, pythonExe, voice, dataDir)
+	if err != nil {
+		return err
+	}
+	voiceDefaults, err := loadVoiceDefaults(configPath)
+	if err != nil {
+		return err
+	}
+
+	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
+		return fmt.Errorf("create audio output directory: %w", err)
+	}
+	var workDir string
+	if options.KeepTemp {
+		workDir = outputPath + ".parts"
+		if err := os.MkdirAll(workDir, 0o755); err != nil {
+			return fmt.Errorf("create TTS parts directory: %w", err)
+		}
+	} else {
+		workDir, err = os.MkdirTemp("", "ai-video-dubber-tts-*")
+		if err != nil {
+			return fmt.Errorf("create TTS work directory: %w", err)
+		}
+		defer os.RemoveAll(workDir)
+	}
+
+	parts := make([]string, 0, len(groups)*2)
+	reports := make([]GroupReport, 0, len(groups))
+	cursor := time.Duration(0)
+	for _, group := range groups {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		gap := group.Start - cursor
+		if gap > time.Millisecond {
+			silencePath := filepath.Join(workDir, fmt.Sprintf("%04d_gap.wav", group.ID))
+			if err := audio.WriteSilencePCM16Mono(silencePath, gap.Nanoseconds(), voiceDefaults.SampleRate); err != nil {
+				return err
+			}
+			parts = append(parts, silencePath)
+		}
+
+		attempts, err := synthesizeAttempts(ctx, runner, pythonExe, modelPath, configPath, group, workDir, voiceDefaults, options)
+		if err != nil {
+			return err
+		}
+		best, err := selectBestAttempt(attempts, group.Duration(), options.MaxAtempo)
+		if err != nil {
+			return fmt.Errorf("select synthesis attempt for group %d: %w", group.ID, err)
+		}
+		speedup, trimmed := fitSpeed(best.Duration, group.Duration(), options.MaxAtempo)
+		fittedPath := filepath.Join(workDir, fmt.Sprintf("%04d_slot.wav", group.ID))
+		if err := audio.FitPCMToSlot(ctx, runner, best.Path, fittedPath, group.Duration(), voiceDefaults.SampleRate, speedup, trimmed); err != nil {
+			return err
+		}
+		parts = append(parts, fittedPath)
+		cursor = group.End
+
+		cueIndices := make([]int, len(group.Cues))
+		for i, cue := range group.Cues {
+			cueIndices[i] = cue.Index
+		}
+		reports = append(reports, GroupReport{
+			ID: group.ID, CueIndices: cueIndices,
+			StartSeconds: group.Start.Seconds(), EndSeconds: group.End.Seconds(),
+			TargetSeconds: group.Duration().Seconds(), Text: group.Text,
+			ChosenLengthScale: best.LengthScale, RawSeconds: best.Duration.Seconds(),
+			SpeedupApplied: speedup, TrimmedFallback: trimmed,
+			SampleRate: voiceDefaults.SampleRate,
+		})
+
+		runnerLog(runner,
+			"[%03d/%03d] %s → %s | slot=%5.2fs raw=%5.2fs scale=%.2f tempo=%.2f%s | %s",
+			group.ID, len(groups), formatDuration(group.Start), formatDuration(group.End),
+			group.Duration().Seconds(), best.Duration.Seconds(), best.LengthScale, speedup,
+			map[bool]string{true: " TRIM", false: ""}[trimmed], excerpt(group.Text, 72),
+		)
+	}
+
+	finalWAV := filepath.Join(workDir, "final_synced.wav")
+	if err := audio.ConcatenatePCM16Mono(parts, finalWAV, voiceDefaults.SampleRate); err != nil {
+		return err
+	}
+	if err := audio.TranscodeWAV(ctx, runner, finalWAV, outputPath); err != nil {
+		return err
+	}
+	if strings.TrimSpace(options.ReportPath) != "" {
+		if err := writeReport(options.ReportPath, reports); err != nil {
+			return err
+		}
+		runnerLog(runner, "Report: %s", options.ReportPath)
+	}
+	runnerLog(runner, "Done: %s", outputPath)
+	return nil
+}
+
+// GroupCues joins short neighboring cues to improve prosody and reduce
+// phrase-boundary artifacts.
+func GroupCues(cues []srt.Cue, options Options) []Group {
+	options = normalizeOptions(options)
+	if len(cues) == 0 {
+		return nil
+	}
+	chunks := make([][]srt.Cue, 0)
+	current := []srt.Cue{cues[0]}
+	for _, cue := range cues[1:] {
+		previous := current[len(current)-1]
+		gap := cue.Start - previous.End
+		if gap < 0 {
+			gap = 0
+		}
+		prospectiveDuration := cue.End - current[0].Start
+		prospectiveChars := utf8.RuneCountInString(cue.Text) + len(current)
+		for _, item := range current {
+			prospectiveChars += utf8.RuneCountInString(item.Text)
+		}
+		shouldBreak := gap > options.MaxGroupGap ||
+			prospectiveDuration > options.MaxGroupDuration ||
+			prospectiveChars > options.MaxGroupChars ||
+			(endsSentence(previous.Text) && (gap >= options.SentenceBreakGap || prospectiveDuration >= options.MinSentenceGroupDuration))
+		if shouldBreak {
+			chunks = append(chunks, current)
+			current = []srt.Cue{cue}
+		} else {
+			current = append(current, cue)
+		}
+	}
+	chunks = append(chunks, current)
+
+	groups := make([]Group, 0, len(chunks))
+	for index, chunk := range chunks {
+		var builder strings.Builder
+		builder.WriteString(strings.TrimSpace(chunk[0].Text))
+		for cueIndex := 1; cueIndex < len(chunk); cueIndex++ {
+			previous := chunk[cueIndex-1]
+			currentCue := chunk[cueIndex]
+			gap := currentCue.Start - previous.End
+			separator := " "
+			if !endsPause(previous.Text) && gap >= 450*time.Millisecond {
+				separator = ", "
+			}
+			builder.WriteString(separator)
+			builder.WriteString(strings.TrimSpace(currentCue.Text))
+		}
+		groups = append(groups, Group{
+			ID: index + 1, Cues: append([]srt.Cue(nil), chunk...),
+			Text:  spaces.ReplaceAllString(strings.TrimSpace(builder.String()), " "),
+			Start: chunk[0].Start, End: chunk[len(chunk)-1].End,
+		})
+	}
+	return groups
+}
+
+type voiceConfig struct {
+	SampleRate  int
+	LengthScale float64
+	NoiseScale  float64
+	NoiseW      float64
+}
+
+type attempt struct {
+	LengthScale float64
+	Duration    time.Duration
+	Path        string
+}
+
+func normalizeOptions(options Options) Options {
+	defaults := Defaults()
+	if options.SentenceSilence < 0 {
+		options.SentenceSilence = defaults.SentenceSilence
+	}
+	if options.SentenceSilence == 0 {
+		options.SentenceSilence = defaults.SentenceSilence
+	}
+	if options.MinLengthScale <= 0 {
+		options.MinLengthScale = defaults.MinLengthScale
+	}
+	if options.MaxLengthScale <= 0 {
+		options.MaxLengthScale = defaults.MaxLengthScale
+	}
+	if options.MinLengthScale > options.MaxLengthScale {
+		options.MinLengthScale, options.MaxLengthScale = options.MaxLengthScale, options.MinLengthScale
+	}
+	if options.MaxAtempo <= 1 {
+		options.MaxAtempo = defaults.MaxAtempo
+	}
+	if options.MaxGroupGap <= 0 {
+		options.MaxGroupGap = defaults.MaxGroupGap
+	}
+	if options.MaxGroupDuration <= 0 {
+		options.MaxGroupDuration = defaults.MaxGroupDuration
+	}
+	if options.MaxGroupChars <= 0 {
+		options.MaxGroupChars = defaults.MaxGroupChars
+	}
+	if options.SentenceBreakGap <= 0 {
+		options.SentenceBreakGap = defaults.SentenceBreakGap
+	}
+	if options.MinSentenceGroupDuration <= 0 {
+		options.MinSentenceGroupDuration = defaults.MinSentenceGroupDuration
+	}
+	return options
+}
+
+func normalizeText(text, languageCode string) string {
+	text = strings.NewReplacer("“", `"`, "”", `"`, "’", "'").Replace(text)
+	text = ellipsis.ReplaceAllString(text, "…")
+	text = frontEnd.ReplaceAllStringFunc(text, func(value string) string {
+		if strings.HasPrefix(value, "F") {
+			return "Front end"
+		}
+		return "front end"
+	})
+	if strings.EqualFold(languageCode, "pt-BR") || strings.EqualFold(languageCode, "pt_BR") {
+		text = strings.ReplaceAll(text, "&", " e ")
+		text = decimal.ReplaceAllString(text, "$1 vírgula $2")
+	}
+	text = spaceBeforePunc.ReplaceAllString(text, "$1")
+	return strings.TrimSpace(spaces.ReplaceAllString(text, " "))
+}
+
+func endsSentence(text string) bool { return sentenceEnd.MatchString(strings.TrimSpace(text)) }
+func endsPause(text string) bool    { return pauseEnd.MatchString(strings.TrimSpace(text)) }
+
+func ensurePiper(ctx context.Context, runner executil.Runner, pythonExe string) error {
+	if strings.TrimSpace(pythonExe) == "" {
+		return fmt.Errorf("Python executable is empty")
+	}
+	if _, err := runner.Output(ctx, pythonExe, []string{"-m", "piper", "--help"}, executil.Options{}); err != nil {
+		return fmt.Errorf("piper-tts is unavailable in the virtual environment: %w", err)
+	}
+	return nil
+}
+
+func ensureVoice(ctx context.Context, runner executil.Runner, pythonExe, voice, dataDir string) (string, string, error) {
+	if strings.TrimSpace(voice) == "" {
+		return "", "", fmt.Errorf("Piper voice name is empty")
+	}
+	if strings.TrimSpace(dataDir) == "" {
+		return "", "", fmt.Errorf("Piper voice directory is empty")
+	}
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		return "", "", fmt.Errorf("create Piper voice directory: %w", err)
+	}
+	model, config := locateVoiceFiles(dataDir, voice)
+	if model != "" && config != "" {
+		return model, config, nil
+	}
+	runnerLog(runner, "Downloading TTS voice: %s...", voice)
+	if err := runner.Run(ctx, pythonExe, []string{"-m", "piper.download_voices", voice, "--data-dir", dataDir}, executil.Options{}); err != nil {
+		return "", "", fmt.Errorf("download Piper voice %q: %w", voice, err)
+	}
+	model, config = locateVoiceFiles(dataDir, voice)
+	if model == "" || config == "" {
+		return "", "", fmt.Errorf("voice download completed, but %s.onnx and its config were not found in %s", voice, dataDir)
+	}
+	return model, config, nil
+}
+
+func locateVoiceFiles(dataDir, voice string) (string, string) {
+	modelName := voice + ".onnx"
+	configName := voice + ".onnx.json"
+	var model, config string
+	_ = filepath.WalkDir(dataDir, func(path string, entry os.DirEntry, err error) error {
+		if err != nil || entry.IsDir() {
+			return nil
+		}
+		switch entry.Name() {
+		case modelName:
+			if model == "" {
+				model = path
+			}
+		case configName:
+			if config == "" {
+				config = path
+			}
+		}
+		return nil
+	})
+	return model, config
+}
+
+func loadVoiceDefaults(path string) (voiceConfig, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return voiceConfig{}, fmt.Errorf("read Piper voice config: %w", err)
+	}
+	var payload struct {
+		Audio struct {
+			SampleRate int `json:"sample_rate"`
+		} `json:"audio"`
+		Inference struct {
+			LengthScale float64 `json:"length_scale"`
+			NoiseScale  float64 `json:"noise_scale"`
+			NoiseW      float64 `json:"noise_w"`
+		} `json:"inference"`
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return voiceConfig{}, fmt.Errorf("decode Piper voice config: %w", err)
+	}
+	result := voiceConfig{
+		SampleRate: payload.Audio.SampleRate, LengthScale: payload.Inference.LengthScale,
+		NoiseScale: payload.Inference.NoiseScale, NoiseW: payload.Inference.NoiseW,
+	}
+	if result.SampleRate <= 0 {
+		result.SampleRate = 22050
+	}
+	if result.LengthScale <= 0 {
+		result.LengthScale = 1.0
+	}
+	if result.NoiseScale <= 0 {
+		result.NoiseScale = 0.667
+	}
+	if result.NoiseW <= 0 {
+		result.NoiseW = 0.8
+	}
+	return result, nil
+}
+
+func synthesizeAttempts(ctx context.Context, runner executil.Runner, pythonExe, modelPath, configPath string, group Group, workDir string, defaults voiceConfig, options Options) ([]attempt, error) {
+	baseScale := defaults.LengthScale
+	if options.LengthScale != nil {
+		baseScale = *options.LengthScale
+	}
+	noiseScale := defaults.NoiseScale
+	if options.NoiseScale != nil {
+		noiseScale = *options.NoiseScale
+	}
+	noiseW := defaults.NoiseW
+	if options.NoiseW != nil {
+		noiseW = *options.NoiseW
+	}
+	candidates := chooseScaleCandidates(baseScale, group.Duration(), options.MinLengthScale, options.MaxLengthScale)
+	attempts := make([]attempt, 0, len(candidates))
+	for index, scale := range candidates {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		path := filepath.Join(workDir, fmt.Sprintf("%04d_raw_%02d.wav", group.ID, index+1))
+		if err := synthesizePiper(ctx, runner, pythonExe, modelPath, configPath, group.Text, path, scale, noiseScale, noiseW, options); err != nil {
+			return nil, err
+		}
+		duration, err := audio.ProbeDuration(ctx, runner, path)
+		if err != nil {
+			return nil, err
+		}
+		attempts = append(attempts, attempt{LengthScale: scale, Duration: duration, Path: path})
+		runnerLog(runner, "[group %03d] try scale=%.3f raw=%.3fs target=%.3fs | %s", group.ID, scale, duration.Seconds(), group.Duration().Seconds(), excerpt(group.Text, 72))
+	}
+	if len(attempts) == 0 {
+		return nil, fmt.Errorf("Piper produced no attempts for group %d", group.ID)
+	}
+	return attempts, nil
+}
+
+func synthesizePiper(ctx context.Context, runner executil.Runner, pythonExe, modelPath, configPath, text, outputPath string, lengthScale, noiseScale, noiseW float64, options Options) error {
+	variants := [][4]string{
+		{"--length-scale", "--noise-scale", "--noise-w", "--sentence-silence"},
+		{"--length_scale", "--noise_scale", "--noise_w", "--sentence_silence"},
+	}
+	var lastErr error
+	for _, flags := range variants {
+		args := []string{
+			"-m", "piper", "-m", modelPath, "-c", configPath, "-f", outputPath,
+			flags[0], fmt.Sprintf("%.4f", lengthScale),
+			flags[1], fmt.Sprintf("%.4f", noiseScale),
+			flags[2], fmt.Sprintf("%.4f", noiseW),
+			flags[3], fmt.Sprintf("%.3f", options.SentenceSilence),
+		}
+		if options.Speaker != nil {
+			args = append(args, "--speaker", fmt.Sprintf("%d", *options.Speaker))
+		}
+		// Piper's CLI accepts one positional text argument after "--". Both
+		// hyphenated and underscored flag spellings are tried for version
+		// compatibility, matching the Python implementation.
+		args = append(args, "--", text)
+		if err := runner.Run(ctx, pythonExe, args, executil.Options{Quiet: true}); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+	}
+	return fmt.Errorf("Piper synthesis failed: %w", lastErr)
+}
+
+func chooseScaleCandidates(base float64, target time.Duration, minScale, maxScale float64) []float64 {
+	raw := []float64{base, base * 0.94, base * 0.88, base * 0.82, base * 0.76, base * 1.06}
+	if target < 2*time.Second {
+		raw = append(raw, base*0.90, base*0.84)
+	}
+	seen := map[int]bool{}
+	result := make([]float64, 0, len(raw))
+	for _, value := range raw {
+		value = math.Min(maxScale, math.Max(minScale, value))
+		key := int(math.Round(value * 10000))
+		if !seen[key] {
+			seen[key] = true
+			result = append(result, float64(key)/10000)
+		}
+	}
+	return result
+}
+
+func selectBestAttempt(attempts []attempt, target time.Duration, maxAtempo float64) (attempt, error) {
+	if len(attempts) == 0 {
+		return attempt{}, fmt.Errorf("empty attempt list")
+	}
+	if target <= 0 {
+		return attempt{}, fmt.Errorf("target duration must be positive")
+	}
+	viable := make([]attempt, 0, len(attempts))
+	for _, item := range attempts {
+		if item.Duration <= 0 {
+			continue
+		}
+		if item.Duration.Seconds() <= target.Seconds()*maxAtempo {
+			viable = append(viable, item)
+		}
+	}
+	if len(viable) > 0 {
+		sort.SliceStable(viable, func(i, j int) bool {
+			deltaI := viable[i].Duration.Seconds() - target.Seconds()
+			deltaJ := viable[j].Duration.Seconds() - target.Seconds()
+			scoreI := math.Abs(deltaI)
+			scoreJ := math.Abs(deltaJ)
+			if deltaI > 0 {
+				scoreI += 0.15
+			}
+			if deltaJ > 0 {
+				scoreJ += 0.15
+			}
+			if math.Abs(scoreI-scoreJ) < 1e-9 {
+				return viable[i].Duration < viable[j].Duration
+			}
+			return scoreI < scoreJ
+		})
+		return viable[0], nil
+	}
+	valid := append([]attempt(nil), attempts...)
+	sort.SliceStable(valid, func(i, j int) bool { return valid[i].Duration < valid[j].Duration })
+	if valid[0].Duration <= 0 {
+		return attempt{}, fmt.Errorf("all attempts have invalid duration")
+	}
+	return valid[0], nil
+}
+
+func fitSpeed(raw, target time.Duration, maxAtempo float64) (float64, bool) {
+	if raw <= 0 || target <= 0 {
+		return 1.0, true
+	}
+	if raw <= target+time.Microsecond {
+		return 1.0, false
+	}
+	exact := raw.Seconds() / target.Seconds()
+	if exact <= maxAtempo {
+		return exact, false
+	}
+	return maxAtempo, true
+}
+
+func writeReport(path string, reports []GroupReport) error {
+	data, err := json.MarshalIndent(reports, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode TTS report: %w", err)
+	}
+	data = append(data, '\n')
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("create report directory: %w", err)
+	}
+	temp, err := os.CreateTemp(dir, ".tts-report-*")
+	if err != nil {
+		return fmt.Errorf("create report temporary file: %w", err)
+	}
+	name := temp.Name()
+	defer func() { _ = os.Remove(name) }()
+	if _, err := temp.Write(data); err != nil {
+		_ = temp.Close()
+		return fmt.Errorf("write TTS report: %w", err)
+	}
+	if err := temp.Sync(); err != nil {
+		_ = temp.Close()
+		return fmt.Errorf("sync TTS report: %w", err)
+	}
+	if err := temp.Chmod(0o644); err != nil {
+		_ = temp.Close()
+		return fmt.Errorf("set TTS report permissions: %w", err)
+	}
+	if err := temp.Close(); err != nil {
+		return fmt.Errorf("close TTS report: %w", err)
+	}
+	if err := replaceFile(name, path); err != nil {
+		return fmt.Errorf("replace TTS report: %w", err)
+	}
+	return nil
+}
+
+func replaceFile(source, destination string) error {
+	if err := os.Rename(source, destination); err == nil {
+		return nil
+	} else if _, statErr := os.Stat(destination); statErr != nil {
+		return err
+	}
+	if err := os.Remove(destination); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return os.Rename(source, destination)
+}
+
+func formatDuration(value time.Duration) string {
+	milliseconds := value.Round(time.Millisecond).Milliseconds()
+	hours := milliseconds / 3_600_000
+	milliseconds %= 3_600_000
+	minutes := milliseconds / 60_000
+	milliseconds %= 60_000
+	seconds := milliseconds / 1_000
+	milliseconds %= 1_000
+	return fmt.Sprintf("%02d:%02d:%02d.%03d", hours, minutes, seconds, milliseconds)
+}
+
+func excerpt(text string, width int) string {
+	text = spaces.ReplaceAllString(strings.TrimSpace(text), " ")
+	if len([]rune(text)) <= width {
+		return text
+	}
+	runes := []rune(text)
+	return string(runes[:width-1]) + "…"
+}
+
+func runnerLog(runner executil.Runner, format string, args ...any) {
+	if runner.Log != nil {
+		runner.Log(fmt.Sprintf(format, args...))
+	}
+}

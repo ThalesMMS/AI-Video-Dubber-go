@@ -1,0 +1,6 @@
+[Details]
+  Icon = "assets/icon.png"
+  Name = "AI Video Dubber"
+  ID = "io.github.ai-video-dubber"
+  Version = "1.0.0"
+  Build = 1
