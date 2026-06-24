@@ -1,39 +1,39 @@
-# AI Video Dubber — Go/Fyne
+# AI Video Dubber - Go/Fyne
 
-Clone funcional do projeto `AI-Video-Dubber-py`, reimplementado com **Go** para a orquestração, **Fyne** para a interface gráfica e os mesmos componentes de IA do projeto original:
+Functional clone of `AI-Video-Dubber-py`, reimplemented with **Go** for orchestration, **Fyne** for the graphical interface, and the same AI components used by the original project:
 
-**Vídeo → áudio → Whisper → tradução → Piper TTS sincronizado → vídeo dublado**
+**Video -> audio -> Whisper -> translation -> synchronized Piper TTS -> dubbed video**
 
-A aplicação oferece uma interface desktop escura semelhante à versão Python, um CLI completo e comandos independentes para cada etapa do pipeline.
+The application provides a dark desktop interface similar to the Python version, a full CLI, and standalone commands for each pipeline stage.
 
-## Funcionalidades
+## Features
 
-- Interface gráfica em Fyne com seleção de vídeo, configuração da API, idioma, progresso em seis etapas, log e cancelamento.
-- Extração de áudio e remux com FFmpeg.
-- Transcrição local com OpenAI Whisper.
-- Tradução por qualquer API compatível com OpenAI (`/v1/models` e `/v1/chat/completions`).
-- Detecção automática do modelo quando o campo **Model** fica vazio.
-- Síntese local com Piper TTS e download automático da voz necessária.
-- Agrupamento de legendas para melhorar prosódia.
-- Ajuste de `length_scale`, correção limitada com `atempo`, preenchimento e corte por janela temporal.
-- Leitura de `.srt` e `.segments.txt` na síntese.
-- Relatório JSON opcional com os parâmetros temporais de cada grupo.
-- Reaproveitamento de intermediários no CLI e regeneração por `--force`.
-- Cancelamento com encerramento da árvore de subprocessos no Unix.
-- Escrita atômica dos principais artefatos para reduzir arquivos parcialmente gravados.
-- Executável CLI separado, sem dependência do runtime gráfico.
+- Fyne graphical interface with video selection, API configuration, language selection, six-step progress, logs, and cancellation.
+- Audio extraction and remuxing with FFmpeg.
+- Local transcription with OpenAI Whisper.
+- Translation through any OpenAI-compatible API (`/v1/models` and `/v1/chat/completions`).
+- Automatic model detection when the **Model** field is empty.
+- Local synthesis with Piper TTS and automatic download of the required voice.
+- Subtitle grouping to improve prosody.
+- `length_scale` tuning, bounded `atempo` correction, padding, and trimming per timing window.
+- `.srt` and `.segments.txt` input for synthesis.
+- Optional JSON report with timing parameters for each group.
+- Reuse of CLI intermediate files and regeneration with `--force`.
+- Cancellation that terminates the subprocess tree on Unix.
+- Atomic writes for the main artifacts to reduce partially written files.
+- Separate CLI executable without a graphical runtime dependency.
 
-> A aplicação é escrita em Go, mas Whisper e Piper continuam sendo executados em um ambiente Python gerenciado automaticamente. Isso preserva a compatibilidade e a qualidade do projeto de referência sem manter scripts Python próprios no projeto Go.
+> The application is written in Go, but Whisper and Piper still run in an automatically managed Python environment. This preserves compatibility and quality from the reference project without maintaining custom Python scripts in the Go project.
 
-## Requisitos
+## Requirements
 
-- Go 1.23 ou mais recente.
-- Python 3.10 ou mais recente.
-- `ffmpeg` e `ffprobe` disponíveis no `PATH`.
-- Compilador C e dependências nativas do Fyne para compilar a GUI.
-- Uma API compatível com OpenAI para a tradução.
+- Go 1.23 or newer.
+- Python 3.10 or newer.
+- `ffmpeg` and `ffprobe` available in `PATH`.
+- C compiler and native Fyne dependencies to build the GUI.
+- An OpenAI-compatible API for translation.
 
-Na primeira execução, o programa cria `.venv`, atualiza as ferramentas de empacotamento e instala `openai-whisper` e `piper-tts`. A voz Piper selecionada também é baixada automaticamente.
+On first run, the program creates `.venv`, upgrades the packaging tools, and installs `openai-whisper` and `piper-tts`. The selected Piper voice is also downloaded automatically.
 
 ### Linux (Debian/Ubuntu)
 
@@ -49,13 +49,13 @@ xcode-select --install
 brew install go python ffmpeg
 ```
 
-Para gerar o bundle autocontido de macOS, Python e FFmpeg do sistema continuam
-necessarios apenas na maquina de build. O `.app` resultante carrega o runtime
-embarcado em `Contents/Resources`.
+To build the self-contained macOS bundle, system Python and FFmpeg are still
+required only on the build machine. The resulting `.app` loads the embedded
+runtime from `Contents/Resources`.
 
 ### Windows
 
-Instale Go, Python 3.10+, FFmpeg e um compilador C compatível com Fyne. Confirme no PowerShell:
+Install Go, Python 3.10+, FFmpeg, and a Fyne-compatible C compiler. Confirm in PowerShell:
 
 ```powershell
 go version
@@ -64,7 +64,7 @@ ffmpeg -version
 ffprobe -version
 ```
 
-## Início rápido
+## Quick Start
 
 ### Linux/macOS
 
@@ -80,38 +80,38 @@ ffprobe -version
 .\bin\ai-video-dubber.exe
 ```
 
-Também é possível executar diretamente durante o desenvolvimento:
+You can also run directly during development:
 
 ```bash
 go run ./cmd/ai-video-dubber
 ```
 
-## Interface gráfica
+## Graphical Interface
 
-1. Selecione um vídeo.
-2. Informe o endpoint da API de tradução.
-3. Informe a chave, quando necessária.
-4. Deixe **Model** vazio para detectar o primeiro modelo exposto pela API.
-5. Escolha o idioma.
-6. Clique em **Start Dubbing**.
+1. Select a video.
+2. Enter the translation API endpoint.
+3. Enter the key when required.
+4. Leave **Model** empty to detect the first model exposed by the API.
+5. Choose the language.
+6. Click **Start Dubbing**.
 
-A GUI sempre regenera os intermediários, reproduzindo o comportamento da interface do projeto Python. A chave da API não é persistida nas preferências da aplicação.
+The GUI always regenerates intermediate files, matching the Python project's interface behavior. The API key is not persisted in application preferences.
 
 ## CLI
 
-O executável principal abre a GUI quando chamado sem argumentos e também oferece subcomandos:
+The main executable opens the GUI when called without arguments and also provides subcommands:
 
 ```bash
 ./bin/ai-video-dubber dub --input video.mp4 --language pt-BR
 ```
 
-Saída padrão:
+Default output:
 
 ```text
 video.pt-BR.synced.mp4
 ```
 
-Exemplo com API e modelo explícitos:
+Example with explicit API and model:
 
 ```bash
 ./bin/ai-video-dubber dub \
@@ -119,72 +119,72 @@ Exemplo com API e modelo explícitos:
   --language es \
   --api-base http://localhost:8000 \
   --api-key apikey \
-  --model meu-modelo \
+  --model my-model \
   --force
 ```
 
-O binário headless aceita os mesmos subcomandos:
+The headless binary accepts the same subcommands:
 
 ```bash
 ./bin/ai-video-dubber-cli dub --input video.mp4 --language fr
 ```
 
-### Etapas independentes
+### Standalone Stages
 
 ```bash
-# 1. Vídeo → MP3
+# 1. Video -> MP3
 ./bin/ai-video-dubber-cli extract --input video.mp4
 
-# 2. Áudio → SRT, segments, JSON e texto
+# 2. Audio -> SRT, segments, JSON, and text
 ./bin/ai-video-dubber-cli transcribe --input video.mp3 --model medium
 
-# 3. SRT → SRT traduzido
+# 3. SRT -> translated SRT
 ./bin/ai-video-dubber-cli translate \
   --input video.srt \
   --output video.pt-BR.srt \
   --language pt-BR \
   --api-base http://localhost:8000
 
-# 4. SRT/segments → áudio sincronizado
+# 4. SRT/segments -> synchronized audio
 ./bin/ai-video-dubber-cli synthesize \
   --input video.pt-BR.srt \
   --language pt-BR \
   --report-json video.pt-BR.tts-report.json
 
-# 5. Vídeo + novo áudio → vídeo final
+# 5. Video + new audio -> final video
 ./bin/ai-video-dubber-cli merge \
   --video video.mp4 \
   --audio video.pt-BR.synced.mp3
 ```
 
-Use `-h` após qualquer subcomando para ver todas as opções. O comando `synthesize` expõe controles avançados de agrupamento, Piper e correção temporal.
+Use `-h` after any subcommand to see all options. The `synthesize` command exposes advanced grouping, Piper, and timing-correction controls.
 
-## Idiomas e vozes padrão
+## Default Languages And Voices
 
-| Idioma | Código | Voz Piper |
+| Language | Code | Piper Voice |
 |---|---:|---|
-| Português do Brasil | `pt-BR` | `pt_BR-faber-medium` |
-| Espanhol | `es` | `es_ES-davefx-medium` |
-| Francês | `fr` | `fr_FR-siwis-medium` |
-| Alemão | `de` | `de_DE-thorsten-medium` |
-| Italiano | `it` | `it_IT-riccardo-x_low` |
+| Brazilian Portuguese | `pt-BR` | `pt_BR-faber-medium` |
+| Spanish | `es` | `es_ES-davefx-medium` |
+| French | `fr` | `fr_FR-siwis-medium` |
+| German | `de` | `de_DE-thorsten-medium` |
+| Italian | `it` | `it_IT-riccardo-x_low` |
 
-No subcomando `synthesize`, `--voice` substitui a voz padrão.
+In the `synthesize` subcommand, `--voice` replaces the default voice.
 
-## Configuração por ambiente
+## Environment Configuration
 
-| Variável | Finalidade | Padrão |
+| Variable | Purpose | Default |
 |---|---|---|
-| `LLM_API_BASE` | Endpoint OpenAI-compatible | `http://localhost:8000` |
-| `LLM_API_KEY` | Chave da API | `apikey` |
-| `LLM_MODEL` | Modelo de tradução | auto-detecção |
-| `WHISPER_MODEL` | Modelo Whisper | `large-v3` |
-| `PYTHON_BIN` | Python do sistema ou override do Python embarcado | Python embarcado, `python3` ou `python` |
-| `VENV_DIR` | Ambiente virtual gerenciado | vazio no bundle; `<projeto>/.venv` no desenvolvimento |
-| `DATA_DIR` | Cache de vozes Piper | cache do usuário |
-| `AI_VIDEO_DUBBER_HOME` | Diretório-base do aplicativo | detectado automaticamente |
+| `LLM_API_BASE` | OpenAI-compatible endpoint | `http://localhost:8000` |
+| `LLM_API_KEY` | API key | `apikey` |
+| `LLM_MODEL` | Translation model | auto-detection |
+| `WHISPER_MODEL` | Whisper model | `large-v3` |
+| `PYTHON_BIN` | System Python or embedded Python override | embedded Python, `python3`, or `python` |
+| `VENV_DIR` | Managed virtual environment | empty in the bundle; `<project>/.venv` during development |
+| `DATA_DIR` | Piper voice cache | user cache |
+| `AI_VIDEO_DUBBER_HOME` | Application base directory | automatically detected |
 
-Exemplo:
+Example:
 
 ```bash
 LLM_API_BASE=http://localhost:1234 \
@@ -194,9 +194,9 @@ WHISPER_MODEL=medium \
 ./bin/ai-video-dubber-cli dub --input video.mp4 --language pt-BR
 ```
 
-## Arquivos produzidos
+## Generated Files
 
-Para `video.mp4` dublado em `pt-BR`:
+For `video.mp4` dubbed into `pt-BR`:
 
 ```text
 video.mp3
@@ -209,121 +209,122 @@ video.pt-BR.synced.mp3
 video.pt-BR.synced.mp4
 ```
 
-O CLI ignora intermediários já existentes, salvo quando `--force` é usado. O vídeo final é sempre remontado.
+The CLI skips existing intermediate files unless `--force` is used. The final video is always remuxed.
 
-## Desenvolvimento
+## Development
 
 ```bash
-# Baixar dependências
+# Download dependencies
 make deps
 
-# Formatação, testes e vet em modo headless
+# Formatting, tests, and vet in headless mode
 make check
 
-# Compilar GUI e CLI
+# Build GUI and CLI
 make build
 
-# Compilar apenas o CLI, inclusive em servidor sem desktop
+# Build only the CLI, including on servers without a desktop
 make build-cli
 ```
 
-### Empacotamento macOS autocontido
+### Self-Contained macOS Packaging
 
-O script `scripts/package-macos.sh` monta um bundle `.app` com:
+The `scripts/package-macos.sh` script assembles a `.app` bundle with:
 
 - `Contents/MacOS/ai-video-dubber`
-- `Contents/Resources/python/bin/python3` com `openai-whisper` e `piper-tts`
-- `Contents/Resources/ffmpeg/ffmpeg` e `ffprobe`
-- tarball separado do CLI headless com o mesmo layout de runtime
+- `Contents/Resources/python/bin/python3` with `openai-whisper` and `piper-tts`
+- `Contents/Resources/ffmpeg/ffmpeg` and `ffprobe`
+- Separate tarball for the headless CLI with the same runtime layout
 
 ```bash
 make package-macos
 ```
 
-Artefatos gerados:
+Generated artifacts:
 
 ```text
 dist/AI-Video-Dubber.app
 dist/AI-Video-Dubber-cli-darwin-<arch>.tar.gz
 ```
 
-Por padrão, o script descobre a release mais recente do
-`astral-sh/python-build-standalone` para Python 3.12 e baixa FFmpeg/FFprobe pela
-API do `evermeet.cx`. Para builds reprodutíveis ou fontes internas, use:
+By default, the script discovers the latest
+`astral-sh/python-build-standalone` release for Python 3.12 and downloads
+FFmpeg/FFprobe through the `evermeet.cx` API. For reproducible builds or
+internal sources, use:
 
 ```bash
 PYTHON_STANDALONE_URL=https://.../cpython-3.12.x+release-aarch64-apple-darwin-install_only.tar.gz \
-FFMPEG_BIN=/caminho/ffmpeg \
-FFPROBE_BIN=/caminho/ffprobe \
+FFMPEG_BIN=/path/to/ffmpeg \
+FFPROBE_BIN=/path/to/ffprobe \
 make package-macos
 ```
 
-Para distribuição arm64 estrita, prefira informar `FFMPEG_BIN` e `FFPROBE_BIN`
-com binários estáticos nativos da arquitetura alvo.
+For strict arm64 distribution, prefer setting `FFMPEG_BIN` and `FFPROBE_BIN`
+with native static binaries for the target architecture.
 
-Variáveis úteis:
+Useful variables:
 
-| Variável | Finalidade |
+| Variable | Purpose |
 |---|---|
-| `ARCH` | `arm64` ou `x86_64`; padrão: arquitetura local |
-| `PYTHON_VERSION_PREFIX` | Prefixo do asset Python; padrão: `cpython-3.12` |
-| `PYTHON_STANDALONE_URL` | URL exata do Python standalone, pulando a descoberta via GitHub |
-| `FFMPEG_URL` / `FFPROBE_URL` | URLs `.zip` alternativas para os binários estáticos |
-| `FFMPEG_BIN` / `FFPROBE_BIN` | Copia binários locais em vez de baixar |
-| `CODESIGN_IDENTITY` | Identidade para assinatura com hardened runtime |
-| `NOTARYTOOL_PROFILE` | Perfil do `notarytool` para notarização |
+| `ARCH` | `arm64` or `x86_64`; default: local architecture |
+| `PYTHON_VERSION_PREFIX` | Python asset prefix; default: `cpython-3.12` |
+| `PYTHON_STANDALONE_URL` | Exact Python standalone URL, skipping GitHub discovery |
+| `FFMPEG_URL` / `FFPROBE_URL` | Alternative `.zip` URLs for the static binaries |
+| `FFMPEG_BIN` / `FFPROBE_BIN` | Copy local binaries instead of downloading |
+| `CODESIGN_IDENTITY` | Identity for hardened-runtime signing |
+| `NOTARYTOOL_PROFILE` | `notarytool` profile for notarization |
 
-Também é possível gerar apenas o tarball autocontido do CLI:
+You can also generate only the self-contained CLI tarball:
 
 ```bash
 make package-cli
 ```
 
-Os testes da GUI usam a tag `ci`, que seleciona o driver de software do Fyne e não exige OpenGL/X11:
+GUI tests use the `ci` tag, which selects Fyne's software driver and does not require OpenGL/X11:
 
 ```bash
 go test -tags ci ./...
 go vet -tags ci ./...
 ```
 
-A compilação nativa da GUI continua exigindo as dependências gráficas da plataforma.
+Native GUI builds still require the platform's graphical dependencies.
 
-## Estrutura
+## Structure
 
 ```text
 .
-├── assets/                       # ícone incorporado
+├── assets/                       # embedded icon
 ├── cmd/
 │   ├── ai-video-dubber/          # GUI + CLI
-│   └── ai-video-dubber-cli/      # CLI headless
+│   └── ai-video-dubber-cli/      # headless CLI
 ├── internal/
-│   ├── audio/                    # FFmpeg, ffprobe, WAV e caminhos
-│   ├── cli/                      # subcomandos
-│   ├── config/                   # configuração e defaults
-│   ├── environment/              # venv e dependências Python
-│   ├── executil/                 # subprocessos, logs e cancelamento
-│   ├── gui/                      # interface Fyne e tema
-│   ├── language/                 # idiomas e vozes
-│   ├── pipeline/                 # orquestração das seis etapas
-│   ├── srt/                      # SRT e segments
-│   ├── transcription/            # integração Whisper
-│   ├── translation/              # cliente OpenAI-compatible
-│   └── tts/                      # Piper e sincronização temporal
-├── scripts/                      # build, execução e validação
+│   ├── audio/                    # FFmpeg, ffprobe, WAV, and paths
+│   ├── cli/                      # subcommands
+│   ├── config/                   # configuration and defaults
+│   ├── environment/              # venv and Python dependencies
+│   ├── executil/                 # subprocesses, logs, and cancellation
+│   ├── gui/                      # Fyne interface and theme
+│   ├── language/                 # languages and voices
+│   ├── pipeline/                 # six-stage orchestration
+│   ├── srt/                      # SRT and segments
+│   ├── transcription/            # Whisper integration
+│   ├── translation/              # OpenAI-compatible client
+│   └── tts/                      # Piper and timing synchronization
+├── scripts/                      # build, run, and validation
 ├── FyneApp.toml
 ├── Makefile
 └── go.mod
 ```
 
-Veja também [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+See also [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
-## Limitações práticas
+## Practical Limitations
 
-- `large-v3` exige bastante memória e pode ser lento sem GPU. Para testes, use `--whisper-model small` ou `medium`.
-- A tradução envia o texto das legendas ao endpoint configurado; transcrição e TTS permanecem locais.
-- O pipeline substitui a faixa de áudio principal e copia a faixa de vídeo. Faixas adicionais, capítulos e metadados não são preservados por padrão.
-- A sincronização prioriza fala natural; quando um trecho não cabe na janela mesmo com correção limitada, o áudio é cortado com um pequeno fade-out.
+- `large-v3` requires substantial memory and can be slow without a GPU. For tests, use `--whisper-model small` or `medium`.
+- Translation sends subtitle text to the configured endpoint; transcription and TTS remain local.
+- The pipeline replaces the main audio track and copies the video track. Additional tracks, chapters, and metadata are not preserved by default.
+- Synchronization prioritizes natural speech; when a segment still does not fit the window after bounded correction, the audio is trimmed with a short fade-out.
 
-## Licença
+## License
 
-MIT. Consulte [`LICENSE`](LICENSE).
+MIT. See [`LICENSE`](LICENSE).

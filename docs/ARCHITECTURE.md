@@ -1,64 +1,64 @@
-# Arquitetura
+# Architecture
 
-## Visão geral
+## Overview
 
-O projeto separa interface, orquestração e integrações externas. A GUI e o CLI constroem uma `config.Config` e delegam a execução a `pipeline.Pipeline`. O pipeline não depende de Fyne e pode ser testado ou executado em ambientes headless.
+The project separates interface, orchestration, and external integrations. The GUI and CLI build a `config.Config` and delegate execution to `pipeline.Pipeline`. The pipeline does not depend on Fyne and can be tested or run in headless environments.
 
 ```text
 GUI / CLI
     │
     ▼
 pipeline.Pipeline
-    ├── environment  → Python/venv, Whisper, Piper e vozes
-    ├── audio        → FFmpeg, ffprobe e manipulação PCM/WAV
-    ├── transcription→ Whisper local
-    ├── translation  → API OpenAI-compatible
-    └── tts          → Piper, agrupamento e ajuste temporal
+    ├── environment  → Python/venv, Whisper, Piper, and voices
+    ├── audio        → FFmpeg, ffprobe, and PCM/WAV handling
+    ├── transcription→ local Whisper
+    ├── translation  → OpenAI-compatible API
+    └── tts          → Piper, grouping, and timing adjustment
 ```
 
-## Decisões principais
+## Main Decisions
 
-### Go como orquestrador
+### Go As Orchestrator
 
-Processos, arquivos, rede, cancelamento e interface são controlados em Go. Whisper e Piper são mantidos no runtime Python porque suas distribuições oficiais e modelos já seguem esse ecossistema. Essa fronteira reduz código duplicado e mantém compatibilidade com o projeto Python.
+Processes, files, networking, cancellation, and interface state are controlled in Go. Whisper and Piper stay in the Python runtime because their official distributions and models already follow that ecosystem. This boundary reduces duplicated code and keeps compatibility with the Python project.
 
-### Pipeline observável
+### Observable Pipeline
 
-`pipeline.Observer` recebe logs e mudanças de estado. O CLI escreve no terminal; a GUI agenda as atualizações na thread do Fyne. O núcleo permanece desacoplado da apresentação.
+`pipeline.Observer` receives logs and state changes. The CLI writes to the terminal; the GUI schedules updates on the Fyne thread. The core remains decoupled from presentation.
 
-### Artefatos determinísticos
+### Deterministic Artifacts
 
-`audio.BuildPaths` centraliza os nomes dos intermediários. Isso mantém compatibilidade com o projeto de referência e permite retomar etapas no CLI.
+`audio.BuildPaths` centralizes intermediate file names. This keeps compatibility with the reference project and lets the CLI resume stages.
 
-### Tradução tolerante
+### Tolerant Translation
 
-O cliente aceita endpoints com ou sem `/v1`, detecta automaticamente o modelo e preserva o original quando uma linha numerada não volta na resposta. As escritas de SRT são atômicas.
+The client accepts endpoints with or without `/v1`, automatically detects the model, and preserves the original when a numbered line is missing from the response. SRT writes are atomic.
 
-### Sincronização TTS
+### TTS Synchronization
 
-1. Cues próximos são agrupados para melhorar a prosódia.
-2. O texto é normalizado por idioma.
-3. São testados vários valores de `length_scale` do Piper.
-4. A tentativa mais próxima da janela é selecionada.
-5. Uma correção `atempo` pequena é aplicada quando necessário.
-6. O trecho é preenchido ou cortado para ocupar exatamente a janela.
-7. Silêncios e trechos são concatenados em PCM16 mono antes da codificação final.
+1. Nearby cues are grouped to improve prosody.
+2. Text is normalized by language.
+3. Multiple Piper `length_scale` values are tested.
+4. The attempt closest to the timing window is selected.
+5. A small `atempo` correction is applied when needed.
+6. The segment is padded or trimmed to occupy the exact timing window.
+7. Silence and segments are concatenated as mono PCM16 before final encoding.
 
-### Cancelamento
+### Cancellation
 
-No Unix, os subprocessos são iniciados em um grupo próprio; cancelar o contexto encerra o grupo. Isso evita deixar FFmpeg, pip, Whisper ou Piper executando após o cancelamento da GUI.
+On Unix, subprocesses start in their own group; canceling the context terminates the group. This avoids leaving FFmpeg, pip, Whisper, or Piper running after GUI cancellation.
 
-### Portabilidade
+### Portability
 
-- Caminhos e substituição de arquivos tratam diferenças do Windows.
-- O CLI headless não importa Fyne.
-- A tag `ci` usa o driver de software do Fyne para testes sem servidor gráfico.
-- A GUI nativa usa o driver padrão da plataforma.
+- Paths and file replacement handle Windows differences.
+- The headless CLI does not import Fyne.
+- The `ci` tag uses Fyne's software driver for tests without a graphical server.
+- The native GUI uses the platform default driver.
 
-## Pontos de extensão
+## Extension Points
 
-- Novos idiomas: adicionar entrada em `internal/language/language.go`.
-- Novo tradutor: implementar outro cliente e injetá-lo no pipeline.
-- Novos formatos de legenda: estender `internal/srt`.
-- Preservação de múltiplas faixas: alterar a política de mapeamento em `audio.MergeVideoAudio`.
-- Aceleração Whisper: adaptar o script incorporado em `internal/transcription` ou criar outro backend.
+- New languages: add an entry in `internal/language/language.go`.
+- New translator: implement another client and inject it into the pipeline.
+- New subtitle formats: extend `internal/srt`.
+- Multiple-track preservation: change the mapping policy in `audio.MergeVideoAudio`.
+- Whisper acceleration: adapt the script embedded in `internal/transcription` or create another backend.

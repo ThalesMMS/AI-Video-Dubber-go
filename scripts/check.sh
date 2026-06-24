@@ -6,7 +6,7 @@ cd "$ROOT"
 
 unformatted="$(gofmt -l $(find . -name '*.go' -not -path './vendor/*'))"
 if [[ -n "$unformatted" ]]; then
-  echo "Arquivos sem gofmt:" >&2
+  echo "Files without gofmt:" >&2
   echo "$unformatted" >&2
   exit 1
 fi

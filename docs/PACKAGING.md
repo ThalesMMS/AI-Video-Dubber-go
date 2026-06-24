@@ -1,49 +1,49 @@
-# Plano de Empacotamento Autocontido — AI-Video-Dubber-go
+# Self-Contained Packaging Plan - AI-Video-Dubber-go
 
-## Objetivo
+## Goal
 
-Disponibilizar o `AI-Video-Dubber-go` como um aplicativo `.app` para macOS que abre com dois cliques e não depende de Python, FFmpeg, variáveis de ambiente ou terminal. O bundle deve conter o binário Go, a interface Fyne, o runtime Python com Whisper e Piper, e os binários `ffmpeg` e `ffprobe`.
+Ship `AI-Video-Dubber-go` as a macOS `.app` that opens with a double-click and does not depend on Python, FFmpeg, environment variables, or a terminal. The bundle must contain the Go binary, the Fyne interface, the Python runtime with Whisper and Piper, and the `ffmpeg` and `ffprobe` binaries.
 
-## Status da implementação
+## Implementation Status
 
-- A resolução de runtime embarcado foi implementada em `internal/config`, com suporte a `.app` e ao tarball headless do CLI.
-- `executil.Runner` agora injeta os diretórios embarcados no `PATH` e redireciona chamadas a `ffmpeg` e `ffprobe` para os binários do bundle.
-- O runtime cria um link curto em cache para `piper/espeak-ng-data` e define `ESPEAK_DATA_PATH`, evitando a falha do `espeakbridge` com caminhos longos dentro do `.app`.
-- `internal/environment` pula a criação de `.venv` quando o Python embarcado está em uso e valida que Whisper e Piper estão importáveis.
-- `scripts/package-macos.sh` gera `dist/AI-Video-Dubber.app` e `dist/AI-Video-Dubber-cli-darwin-<arch>.tar.gz`.
-- `make package-macos` executa o empacotamento completo; `make package-cli` gera apenas o tarball do CLI.
-- O script aceita `FFMPEG_BIN` e `FFPROBE_BIN` para builds arm64 nativos quando os binários baixados por padrão não forem adequados.
-- Ainda é necessário validar o `.app` em uma máquina limpa sem Python/FFmpeg no `PATH` antes de distribuir para usuários finais.
+- Embedded runtime resolution is implemented in `internal/config`, with support for `.app` bundles and the headless CLI tarball.
+- `executil.Runner` now injects embedded directories into `PATH` and redirects `ffmpeg` and `ffprobe` calls to the bundle binaries.
+- The runtime creates a short cache link for `piper/espeak-ng-data` and sets `ESPEAK_DATA_PATH`, avoiding the `espeakbridge` failure caused by long paths inside the `.app`.
+- `internal/environment` skips `.venv` creation when embedded Python is in use and validates that Whisper and Piper can be imported.
+- `scripts/package-macos.sh` generates `dist/AI-Video-Dubber.app` and `dist/AI-Video-Dubber-cli-darwin-<arch>.tar.gz`.
+- `make package-macos` runs the full packaging flow; `make package-cli` generates only the CLI tarball.
+- The script accepts `FFMPEG_BIN` and `FFPROBE_BIN` for native arm64 builds when the default downloaded binaries are not suitable.
+- The `.app` still needs validation on a clean machine without Python/FFmpeg in `PATH` before distribution to end users.
 
-## Estado atual
+## Current State
 
-- O núcleo do aplicativo é Go/Fyne.
-- O CLI e a GUI compartilham a camada `pipeline`.
-- O app não embute scripts Python via `go:embed`; em vez disso, ele cria um ambiente virtual `.venv` automaticamente na primeira execução e instala `openai-whisper` e `piper-tts`.
-- Depende de `ffmpeg` e `ffprobe` instalados no `PATH`.
-- Variáveis de ambiente `PYTHON_BIN`, `VENV_DIR` e `AI_VIDEO_DUBBER_HOME` controlam o runtime.
-- Existem dois binários: `ai-video-dubber` (GUI + CLI) e `ai-video-dubber-cli` (headless).
-- O target `fyne package` existe no `Makefile`, mas gera apenas o binário Go com metadados; não leva Python nem FFmpeg embarcados.
+- The application core is Go/Fyne.
+- The CLI and GUI share the `pipeline` layer.
+- The app does not embed Python scripts through `go:embed`; instead, it automatically creates a `.venv` on first run and installs `openai-whisper` and `piper-tts`.
+- It depends on `ffmpeg` and `ffprobe` installed in `PATH`.
+- The `PYTHON_BIN`, `VENV_DIR`, and `AI_VIDEO_DUBBER_HOME` environment variables control the runtime.
+- There are two binaries: `ai-video-dubber` (GUI + CLI) and `ai-video-dubber-cli` (headless).
+- The `fyne package` target exists in the `Makefile`, but it only generates the Go binary with metadata; it does not include embedded Python or FFmpeg.
 
-## Decisões de arquitetura
+## Architecture Decisions
 
-### 1. Python relocável
+### 1. Relocatable Python
 
-Usar como base o **Python standalone** do projeto `indygreg/python-build-standalone`. Essa distribuição já é compilada para ser relocável no macOS.
+Use **Python standalone** from the `indygreg/python-build-standalone` project as the base. This distribution is already compiled to be relocatable on macOS.
 
-Pacotes a instalar no Python embarcado:
+Packages to install into embedded Python:
 
 - `openai-whisper`
 - `piper-tts`
-- `wheel`, `setuptools`, `pip` atualizados
+- Updated `wheel`, `setuptools`, and `pip`
 
-A instalação deve ser feita diretamente no Python relocável, sem `venv` interno. Isso simplifica o startup e evita a etapa de criação de ambiente virtual na primeira execução.
+Install directly into the relocatable Python, without an internal `venv`. This simplifies startup and avoids creating a virtual environment on first run.
 
-### 2. FFmpeg embarcado
+### 2. Embedded FFmpeg
 
-Baixar builds estáticos de `ffmpeg` e `ffprobe` para macOS (por exemplo, via `evermeet.cx` ou via `brew` copiado para dentro do bundle). Os binários ficam em `Contents/Resources/ffmpeg/`.
+Download static `ffmpeg` and `ffprobe` builds for macOS, for example through `evermeet.cx` or by copying Homebrew binaries into the bundle. The binaries live in `Contents/Resources/ffmpeg/`.
 
-### 3. Estrutura do `.app`
+### 3. `.app` Structure
 
 ```text
 AI-Video-Dubber.app/
@@ -64,133 +64,133 @@ AI-Video-Dubber.app/
 │           └── ffprobe
 ```
 
-### 4. Descoberta de recursos em runtime
+### 4. Runtime Resource Discovery
 
-Adicionar uma função Go que, a partir de `os.Executable()`, detecta se o binário está dentro de um `.app` e resolve caminhos relativos para:
+Add a Go helper that starts from `os.Executable()`, detects whether the binary is inside a `.app`, and resolves relative paths for:
 
 - `Contents/Resources/python/bin/python3`
 - `Contents/Resources/ffmpeg/ffmpeg`
 - `Contents/Resources/ffmpeg/ffprobe`
 
-A ordem de resolução deve ser:
+Resolution order:
 
-1. Variáveis de ambiente `PYTHON_BIN`, `VENV_DIR` e `ffmpeg` no `PATH` (modo desenvolvimento).
-2. Recursos bundled em `Contents/Resources/`.
-3. Fallback para `PATH` do sistema.
+1. `PYTHON_BIN`, `VENV_DIR`, and `ffmpeg` in `PATH` (development mode).
+2. Bundled resources in `Contents/Resources/`.
+3. Fallback to the system `PATH`.
 
-### 5. CLI headless
+### 5. Headless CLI
 
-O binário `ai-video-dubber-cli` também pode ser empacotado como executável autocontido, mas o foco principal é o `.app` da GUI. Para o CLI, pode-se gerar um tarball com o binário Go, Python e FFmpeg lado a lado, usando a mesma lógica de descoberta de recursos.
+The `ai-video-dubber-cli` binary can also be packaged as a self-contained executable, but the main focus is the GUI `.app`. For the CLI, generate a tarball with the Go binary, Python, and FFmpeg side by side, using the same resource-discovery logic.
 
-### 6. Cache de modelos
+### 6. Model Cache
 
-Modelos Whisper e vozes Piper continuarão sendo baixados na primeira execução e armazenados em `~/Library/Caches/AI-Video-Dubber` ou equivalente. Isso mantém o bundle menor e permite atualizar modelos sem rebuild.
+Whisper models and Piper voices continue to download on first run and are stored in `~/Library/Caches/AI-Video-Dubber` or the equivalent cache directory. This keeps the bundle smaller and allows model updates without rebuilding the app.
 
-## Mudanças necessárias
+## Required Changes
 
-### Código Go
+### Go Code
 
 - `internal/config/config.go`
-  - Adicionar função auxiliar para resolver caminhos de recursos embarcados.
-  - Preservar leitura das variáveis de ambiente existentes.
-  - Ajustar `VenvDir` para não ser criado quando Python bundled estiver disponível.
+  - Add a helper to resolve embedded resource paths.
+  - Preserve existing environment-variable reads.
+  - Adjust `VenvDir` so it is not created when bundled Python is available.
 
 - `internal/environment/setup.go`
-  - Pular criação de `.venv` quando `pythonExe` já for o Python embarcado.
-  - Garantir que `whisper` e `piper` estejam importáveis no Python bundled.
+  - Skip `.venv` creation when `pythonExe` is already the embedded Python.
+  - Ensure `whisper` and `piper` can be imported from bundled Python.
 
 - `internal/audio/ffmpeg.go`
-  - Usar `ffmpeg` e `ffprobe` embarcados quando detectados.
-  - Manter fallback para `PATH`.
+  - Use embedded `ffmpeg` and `ffprobe` when detected.
+  - Keep the `PATH` fallback.
 
 - `internal/executil/runner.go`
-  - Garantir que subprocessos enxerguem o Python e FFmpeg embarcados.
+  - Ensure subprocesses can see embedded Python and FFmpeg.
 
-### Build e scripts
+### Build And Scripts
 
-- Criar `scripts/package-macos.sh`.
-  - Baixar Python standalone para a arquitetura alvo.
-  - Instalar `openai-whisper` e `piper-tts`.
-  - Baixar `ffmpeg` e `ffprobe` estáticos.
-  - Compilar `cmd/ai-video-dubber` e `cmd/ai-video-dubber-cli`.
-  - Montar a estrutura do `.app`.
-  - Gerar `Info.plist`.
-  - Copiar ícone de `assets/icon.png`.
-  - Opcional: assinar com `codesign` e notarizar com `notarytool`.
+- Create `scripts/package-macos.sh`.
+  - Download Python standalone for the target architecture.
+  - Install `openai-whisper` and `piper-tts`.
+  - Download static `ffmpeg` and `ffprobe`.
+  - Build `cmd/ai-video-dubber` and `cmd/ai-video-dubber-cli`.
+  - Assemble the `.app` structure.
+  - Generate `Info.plist`.
+  - Copy `assets/icon.png`.
+  - Optionally sign with `codesign` and notarize with `notarytool`.
 
-- Atualizar `Makefile`.
-  - Adicionar target `package-macos`.
-  - Adicionar target `package-cli` para tarball autocontido do CLI.
+- Update `Makefile`.
+  - Add a `package-macos` target.
+  - Add a `package-cli` target for the self-contained CLI tarball.
 
-## Fases de execução
+## Execution Phases
 
-### Fase 1 — Análise do código
+### Phase 1 - Code Analysis
 
-- Mapear todos os pontos onde `PYTHON_BIN`, `VENV_DIR`, `ffmpeg`, `ffprobe` e `python` são usados.
-- Confirmar dependências exatas de Whisper e Piper.
-- Verificar se o CLI headless depende de Fyne indiretamente.
+- Map every place where `PYTHON_BIN`, `VENV_DIR`, `ffmpeg`, `ffprobe`, and `python` are used.
+- Confirm exact Whisper and Piper dependencies.
+- Verify whether the headless CLI indirectly depends on Fyne.
 
-### Fase 2 — Protótipo de Python relocável
+### Phase 2 - Relocatable Python Prototype
 
-- Baixar `python-build-standalone` para macOS.
-- Instalar `openai-whisper` e `piper-tts`.
-- Testar transcrição e síntese manualmente.
-- Medir tamanho do Python após instalação.
+- Download `python-build-standalone` for macOS.
+- Install `openai-whisper` and `piper-tts`.
+- Manually test transcription and synthesis.
+- Measure Python size after installation.
 
-### Fase 3 — Protótipo de FFmpeg relocável
+### Phase 3 - Relocatable FFmpeg Prototype
 
-- Baixar `ffmpeg` e `ffprobe` estáticos para macOS.
-- Testar extração de áudio e remux com os binários em um diretório arbitrário.
-- Confirmar que não dependem de bibliotecas dinâmicas externas.
+- Download static `ffmpeg` and `ffprobe` for macOS.
+- Test audio extraction and remuxing with the binaries in an arbitrary directory.
+- Confirm they do not depend on external dynamic libraries.
 
-### Fase 4 — Detecção de recursos em Go
+### Phase 4 - Go Resource Detection
 
-- Implementar função de resolução de caminhos embarcados.
-- Ajustar `config.go`, `environment/setup.go` e `audio/ffmpeg.go`.
-- Adicionar testes unitários para os cenários:
-  - dentro do `.app`
-  - fora do `.app`
-  - com variáveis de ambiente definidas
+- Implement embedded path resolution.
+- Adjust `config.go`, `environment/setup.go`, and `audio/ffmpeg.go`.
+- Add unit tests for these scenarios:
+  - inside the `.app`
+  - outside the `.app`
+  - with environment variables set
 
-### Fase 5 — Script de empacotamento
+### Phase 5 - Packaging Script
 
-- Criar `scripts/package-macos.sh`.
-- Suportar arquitetura arm64 e x86_64.
-- Gerar `Info.plist` com bundle ID apropriado (conforme `FyneApp.toml`).
-- Empacotar CLI opcional em tarball separado.
+- Create `scripts/package-macos.sh`.
+- Support arm64 and x86_64 architectures.
+- Generate `Info.plist` with the appropriate bundle ID from `FyneApp.toml`.
+- Optionally package the CLI in a separate tarball.
 
-### Fase 6 — Testes
+### Phase 6 - Tests
 
-- Executar o `.app` em uma máquina sem Python e sem FFmpeg no `PATH`.
-- Processar um vídeo de exemplo do início ao fim.
-- Confirmar que todos os intermediários são gerados.
-- Testar o cancelamento de subprocessos.
-- Testar o CLI empacotado.
+- Run the `.app` on a machine without Python or FFmpeg in `PATH`.
+- Process a sample video end to end.
+- Confirm all intermediate files are generated.
+- Test subprocess cancellation.
+- Test the packaged CLI.
 
-### Fase 7 — Documentação
+### Phase 7 - Documentation
 
-- Atualizar `README.md` com instruções de build do `.app`.
-- Registrar tamanho do bundle, tempo de primeira execução e limitações de notarização.
-- Documentar como gerar apenas o CLI headless.
+- Update `README.md` with `.app` build instructions.
+- Record bundle size, first-run time, and notarization limitations.
+- Document how to generate only the headless CLI.
 
-## Tamanho esperado do bundle
+## Expected Bundle Size
 
-- Python standalone com Whisper e Piper: ~250–400 MB.
-- FFmpeg estático: ~50–100 MB.
-- Binário Go: ~20–40 MB.
-- Total estimado: ~350–550 MB.
+- Python standalone with Whisper and Piper: ~250-400 MB.
+- Static FFmpeg: ~50-100 MB.
+- Go binary: ~20-40 MB.
+- Estimated total: ~350-550 MB.
 
-## Riscos e limitações
+## Risks And Limitations
 
-- **Notarização**: sem Apple Developer ID, o usuário precisa autorizar o app em `Segurança e Privacidade`.
-- **Primeira execução**: ainda pode ser lenta devido ao download do modelo Whisper e da voz Piper.
-- **Tamanho**: Whisper e modelos aumentam significativamente o bundle se incluídos.
-- **FFmpeg estático**: pode perder suporte a alguns codecs; validar com vídeos de exemplo.
-- **Whisper**: modelo `large-v3` pode não caber em máquinas com pouca RAM; considerar modelo padrão menor para o bundle.
-- **Atualizações**: mudanças nos pacotes Python ou no FFmpeg exigem novo build.
+- **Notarization**: without an Apple Developer ID, the user needs to allow the app in `Security & Privacy`.
+- **First run**: it can still be slow because the Whisper model and Piper voice must be downloaded.
+- **Size**: Whisper and models significantly increase the bundle if included.
+- **Static FFmpeg**: it may lack support for some codecs; validate with sample videos.
+- **Whisper**: the `large-v3` model may not fit on low-RAM machines; consider a smaller default model for the bundle.
+- **Updates**: changes to Python packages or FFmpeg require a new build.
 
-## Próximos passos recomendados
+## Recommended Next Steps
 
-1. Iniciar pela Fase 2 (protótipo de Python relocável com Whisper e Piper).
-2. Em paralelo, Fase 3 (protótipo de FFmpeg estático).
-3. Depois de validados, aplicar a Fase 4 (detecção em Go) e Fase 5 (script de empacotamento).
+1. Start with Phase 2, the relocatable Python prototype with Whisper and Piper.
+2. In parallel, run Phase 3, the static FFmpeg prototype.
+3. After both are validated, apply Phase 4, Go detection, and Phase 5, the packaging script.

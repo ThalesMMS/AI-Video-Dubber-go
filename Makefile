@@ -16,7 +16,7 @@ fmt:
 
 fmt-check:
 	@files="$$(gofmt -l $$(find . -name '*.go' -not -path './vendor/*'))"; \
-	if [ -n "$$files" ]; then echo "Arquivos sem gofmt:"; echo "$$files"; exit 1; fi
+	if [ -n "$$files" ]; then echo "Files without gofmt:"; echo "$$files"; exit 1; fi
 
 test:
 	$(GO) test -tags ci ./...
@@ -42,7 +42,7 @@ run-cli:
 	$(GO) run ./cmd/ai-video-dubber-cli help
 
 package:
-	@command -v fyne >/dev/null || { echo "Instale a ferramenta: go install fyne.io/tools/cmd/fyne@latest"; exit 1; }
+	@command -v fyne >/dev/null || { echo "Install the tool: go install fyne.io/tools/cmd/fyne@latest"; exit 1; }
 	fyne package
 
 package-macos:
