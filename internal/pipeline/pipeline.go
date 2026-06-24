@@ -90,7 +90,7 @@ func (p Pipeline) Run(ctx context.Context, rawConfig config.Config) (Result, err
 		return Result{}, fmt.Errorf("create output directory: %w", err)
 	}
 
-	runner := executil.Runner{Log: p.log}
+	runner := executil.Runner{Log: p.log, Tools: cfg.ToolPaths(), Env: cfg.RuntimeEnv()}
 	p.log("")
 	p.log("Dubbing Pipeline")
 	p.log("  Input:    " + paths.Input)

@@ -2,3 +2,7 @@
 *.srt
 *.mp3
 /bin
+/dist
+/logs
+/sample
+/.cache

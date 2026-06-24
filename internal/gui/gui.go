@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
@@ -60,6 +61,7 @@ type ui struct {
 
 	mu         sync.Mutex
 	logBuilder strings.Builder
+	logFile    *os.File
 	cancelRun  context.CancelFunc
 	running    bool
 }
@@ -215,6 +217,7 @@ func (u *ui) startPipeline() {
 	u.application.Preferences().SetString("api_base", apiBase)
 	u.application.Preferences().SetString("model", strings.TrimSpace(u.model.Text))
 	u.application.Preferences().SetString("language", lang.DisplayName)
+	u.openLogFile(inputPath)
 	u.resetRun()
 	u.setRunning(true)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -240,6 +243,7 @@ func (u *ui) startPipeline() {
 	}
 
 	go func() {
+		defer u.closeLogFile()
 		result, runErr := (pipeline.Pipeline{ProjectDir: u.projectDir, Observer: u}).Run(ctx, cfg)
 		switch {
 		case runErr == nil:
@@ -303,6 +307,43 @@ func (u *ui) resetRun() {
 	}
 }
 
+func (u *ui) openLogFile(inputPath string) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.logFile != nil {
+		_ = u.logFile.Close()
+		u.logFile = nil
+	}
+	logDir := filepath.Join(u.projectDir, "logs")
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		return
+	}
+	timestamp := time.Now().Format("20060102-150405")
+	base := filepath.Base(inputPath)
+	base = strings.TrimSuffix(base, filepath.Ext(base))
+	if base == "" {
+		base = "dubbing"
+	}
+	logPath := filepath.Join(logDir, base+"-"+timestamp+".log")
+	file, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return
+	}
+	u.logFile = file
+	u.logFile.WriteString("[" + time.Now().Format("15:04:05") + "] Log started: " + logPath + "\n")
+	u.logFile.WriteString("[" + time.Now().Format("15:04:05") + "] Input: " + inputPath + "\n")
+}
+
+func (u *ui) closeLogFile() {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.logFile != nil {
+		u.logFile.WriteString("[" + time.Now().Format("15:04:05") + "] Log finished.\n")
+		_ = u.logFile.Close()
+		u.logFile = nil
+	}
+}
+
 // OnLog implements pipeline.Observer.
 func (u *ui) OnLog(line string) {
 	u.mu.Lock()
@@ -318,6 +359,9 @@ func (u *ui) OnLog(line string) {
 		}
 		u.logBuilder.Reset()
 		u.logBuilder.WriteString(text)
+	}
+	if u.logFile != nil && strings.TrimSpace(line) != "" {
+		u.logFile.WriteString("[" + time.Now().Format("15:04:05") + "] " + line + "\n")
 	}
 	u.mu.Unlock()
 	fyne.Do(func() {

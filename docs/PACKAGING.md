@@ -4,6 +4,16 @@
 
 Disponibilizar o `AI-Video-Dubber-go` como um aplicativo `.app` para macOS que abre com dois cliques e não depende de Python, FFmpeg, variáveis de ambiente ou terminal. O bundle deve conter o binário Go, a interface Fyne, o runtime Python com Whisper e Piper, e os binários `ffmpeg` e `ffprobe`.
 
+## Status da implementação
+
+- A resolução de runtime embarcado foi implementada em `internal/config`, com suporte a `.app` e ao tarball headless do CLI.
+- `executil.Runner` agora injeta os diretórios embarcados no `PATH` e redireciona chamadas a `ffmpeg` e `ffprobe` para os binários do bundle.
+- `internal/environment` pula a criação de `.venv` quando o Python embarcado está em uso e valida que Whisper e Piper estão importáveis.
+- `scripts/package-macos.sh` gera `dist/AI-Video-Dubber.app` e `dist/AI-Video-Dubber-cli-darwin-<arch>.tar.gz`.
+- `make package-macos` executa o empacotamento completo; `make package-cli` gera apenas o tarball do CLI.
+- O script aceita `FFMPEG_BIN` e `FFPROBE_BIN` para builds arm64 nativos quando os binários baixados por padrão não forem adequados.
+- Ainda é necessário validar o `.app` em uma máquina limpa sem Python/FFmpeg no `PATH` antes de distribuir para usuários finais.
+
 ## Estado atual
 
 - O núcleo do aplicativo é Go/Fyne.

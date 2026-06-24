@@ -4,7 +4,7 @@ DIST_DIR ?= dist
 APP := $(BIN_DIR)/ai-video-dubber
 CLI := $(BIN_DIR)/ai-video-dubber-cli
 
-.PHONY: all deps fmt fmt-check test vet check build build-cli run run-cli package clean
+.PHONY: all deps fmt fmt-check test vet check build build-cli run run-cli package package-macos package-cli clean
 
 all: check build
 
@@ -44,6 +44,12 @@ run-cli:
 package:
 	@command -v fyne >/dev/null || { echo "Instale a ferramenta: go install fyne.io/tools/cmd/fyne@latest"; exit 1; }
 	fyne package
+
+package-macos:
+	./scripts/package-macos.sh all
+
+package-cli:
+	./scripts/package-macos.sh cli
 
 clean:
 	rm -rf $(BIN_DIR) $(DIST_DIR)

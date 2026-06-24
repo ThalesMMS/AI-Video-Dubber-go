@@ -30,13 +30,25 @@ func Setup(ctx context.Context, runner executil.Runner, cfg config.Config, voice
 
 // SetupRuntime creates the virtual environment and installs Whisper/Piper when missing.
 func SetupRuntime(ctx context.Context, runner executil.Runner, cfg config.Config) (string, error) {
-	for _, executable := range []string{"ffmpeg", "ffprobe", cfg.PythonBin} {
+	for _, executable := range []string{cfg.FFmpegBin, cfg.FFprobeBin, cfg.PythonBin} {
 		if err := executil.Require(executable); err != nil {
 			return "", err
 		}
 	}
 	if err := validatePythonVersion(ctx, runner, cfg.PythonBin); err != nil {
 		return "", err
+	}
+	if config.IsBundledPython(cfg.PythonBin) {
+		if err := verifyPythonDependencies(ctx, runner, cfg.PythonBin); err != nil {
+			return "", fmt.Errorf("bundled Python is missing Whisper/Piper dependencies: %w", err)
+		}
+		if runner.Log != nil {
+			runner.Log("Using bundled Python runtime.")
+		}
+		return cfg.PythonBin, nil
+	}
+	if strings.TrimSpace(cfg.VenvDir) == "" {
+		return "", fmt.Errorf("virtual environment directory is required when Python is not bundled")
 	}
 	pythonExe := config.VenvPython(cfg.VenvDir)
 	if _, err := os.Stat(pythonExe); err != nil {
@@ -54,9 +66,7 @@ func SetupRuntime(ctx context.Context, runner executil.Runner, cfg config.Config
 		}
 	}
 
-	_, importErr := runner.Output(ctx, pythonExe, []string{"-c", "import whisper, piper"}, executil.Options{})
-	_, piperErr := runner.Output(ctx, pythonExe, []string{"-m", "piper", "--help"}, executil.Options{})
-	if importErr != nil || piperErr != nil {
+	if err := verifyPythonDependencies(ctx, runner, pythonExe); err != nil {
 		if runner.Log != nil {
 			runner.Log("Installing Whisper and Piper dependencies (first run may take several minutes)...")
 		}
@@ -71,6 +81,16 @@ func SetupRuntime(ctx context.Context, runner executil.Runner, cfg config.Config
 	}
 
 	return pythonExe, nil
+}
+
+func verifyPythonDependencies(ctx context.Context, runner executil.Runner, pythonExe string) error {
+	if _, err := runner.Output(ctx, pythonExe, []string{"-c", "import whisper, piper"}, executil.Options{}); err != nil {
+		return fmt.Errorf("import whisper and piper: %w", err)
+	}
+	if _, err := runner.Output(ctx, pythonExe, []string{"-m", "piper", "--help"}, executil.Options{}); err != nil {
+		return fmt.Errorf("run piper module: %w", err)
+	}
+	return nil
 }
 
 func validatePythonVersion(ctx context.Context, runner executil.Runner, pythonBin string) error {

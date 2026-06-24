@@ -44,7 +44,7 @@ func Run(args []string, projectDir string) int {
 	case "dub":
 		err = runDub(ctx, commandArgs, projectDir)
 	case "extract":
-		err = runExtract(ctx, commandArgs)
+		err = runExtract(ctx, commandArgs, projectDir)
 	case "transcribe":
 		err = runTranscribe(ctx, commandArgs, projectDir)
 	case "translate":
@@ -52,7 +52,7 @@ func Run(args []string, projectDir string) int {
 	case "synthesize":
 		err = runSynthesize(ctx, commandArgs, projectDir)
 	case "merge":
-		err = runMerge(ctx, commandArgs)
+		err = runMerge(ctx, commandArgs, projectDir)
 	case "help", "--help", "-h":
 		printUsage(os.Stdout)
 		return 0
@@ -117,7 +117,7 @@ func runDub(ctx context.Context, args []string, projectDir string) error {
 	return err
 }
 
-func runExtract(ctx context.Context, args []string) error {
+func runExtract(ctx context.Context, args []string, projectDir string) error {
 	set := newFlagSet("extract")
 	input := set.String("input", "", "input video (required)")
 	output := set.String("output", "", "output MP3")
@@ -130,7 +130,8 @@ func runExtract(ctx context.Context, args []string) error {
 	if *output == "" {
 		*output = strings.TrimSuffix(*input, filepath.Ext(*input)) + ".mp3"
 	}
-	return audio.ExtractMP3(ctx, consoleRunner(), *input, *output)
+	cfg := config.Defaults().Normalize(projectDir)
+	return audio.ExtractMP3(ctx, consoleRunner(cfg), *input, *output)
 }
 
 func runTranscribe(ctx context.Context, args []string, projectDir string) error {
@@ -155,11 +156,12 @@ func runTranscribe(ctx context.Context, args []string, projectDir string) error 
 	cfg.PythonBin = *python
 	cfg.VenvDir = *venv
 	cfg = cfg.Normalize(projectDir)
-	pythonExe, err := environment.SetupRuntime(ctx, consoleRunner(), cfg)
+	runner := consoleRunner(cfg)
+	pythonExe, err := environment.SetupRuntime(ctx, runner, cfg)
 	if err != nil {
 		return err
 	}
-	return transcription.Run(ctx, consoleRunner(), pythonExe, *input, *model, *sourceLanguage, transcription.OutputPaths{
+	return transcription.Run(ctx, runner, pythonExe, *input, *model, *sourceLanguage, transcription.OutputPaths{
 		SRT: *prefix + ".srt", Segments: *prefix + ".segments.txt",
 		JSON: *prefix + ".json", Text: *prefix + ".txt",
 	})
@@ -250,7 +252,8 @@ func runSynthesize(ctx context.Context, args []string, projectDir string) error 
 	cfg.VenvDir = *venv
 	cfg.VoiceDataDir = *dataDir
 	cfg = cfg.Normalize(projectDir)
-	pythonExe, err := environment.Setup(ctx, consoleRunner(), cfg, voice)
+	runner := consoleRunner(cfg)
+	pythonExe, err := environment.Setup(ctx, runner, cfg, voice)
 	if err != nil {
 		return err
 	}
@@ -284,7 +287,7 @@ func runSynthesize(ctx context.Context, args []string, projectDir string) error 
 		value := *noiseW
 		options.NoiseW = &value
 	}
-	return tts.Synthesize(ctx, consoleRunner(), pythonExe, *input, *output, voice, cfg.VoiceDataDir, options)
+	return tts.Synthesize(ctx, runner, pythonExe, *input, *output, voice, cfg.VoiceDataDir, options)
 }
 
 func timestampBase(path string) string {
@@ -295,7 +298,7 @@ func timestampBase(path string) string {
 	return strings.TrimSuffix(path, filepath.Ext(path))
 }
 
-func runMerge(ctx context.Context, args []string) error {
+func runMerge(ctx context.Context, args []string, projectDir string) error {
 	set := newFlagSet("merge")
 	video := set.String("video", "", "source video (required)")
 	audioPath := set.String("audio", "", "replacement audio (required)")
@@ -309,11 +312,16 @@ func runMerge(ctx context.Context, args []string) error {
 	if *output == "" {
 		*output = strings.TrimSuffix(*video, filepath.Ext(*video)) + ".dubbed.mp4"
 	}
-	return audio.MergeVideoAudio(ctx, consoleRunner(), *video, *audioPath, *output)
+	cfg := config.Defaults().Normalize(projectDir)
+	return audio.MergeVideoAudio(ctx, consoleRunner(cfg), *video, *audioPath, *output)
 }
 
-func consoleRunner() executil.Runner {
-	return executil.Runner{Log: func(line string) { fmt.Println(line) }}
+func consoleRunner(cfg config.Config) executil.Runner {
+	return executil.Runner{
+		Log:   func(line string) { fmt.Println(line) },
+		Tools: cfg.ToolPaths(),
+		Env:   cfg.RuntimeEnv(),
+	}
 }
 
 func newFlagSet(name string) *flag.FlagSet {

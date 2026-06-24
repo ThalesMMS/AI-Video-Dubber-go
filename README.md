@@ -49,6 +49,10 @@ xcode-select --install
 brew install go python ffmpeg
 ```
 
+Para gerar o bundle autocontido de macOS, Python e FFmpeg do sistema continuam
+necessarios apenas na maquina de build. O `.app` resultante carrega o runtime
+embarcado em `Contents/Resources`.
+
 ### Windows
 
 Instale Go, Python 3.10+, FFmpeg e um compilador C compatível com Fyne. Confirme no PowerShell:
@@ -175,8 +179,8 @@ No subcomando `synthesize`, `--voice` substitui a voz padrão.
 | `LLM_API_KEY` | Chave da API | `apikey` |
 | `LLM_MODEL` | Modelo de tradução | auto-detecção |
 | `WHISPER_MODEL` | Modelo Whisper | `large-v3` |
-| `PYTHON_BIN` | Python do sistema | `python3` ou `python` |
-| `VENV_DIR` | Ambiente virtual gerenciado | `<projeto>/.venv` |
+| `PYTHON_BIN` | Python do sistema ou override do Python embarcado | Python embarcado, `python3` ou `python` |
+| `VENV_DIR` | Ambiente virtual gerenciado | vazio no bundle; `<projeto>/.venv` no desenvolvimento |
 | `DATA_DIR` | Cache de vozes Piper | cache do usuário |
 | `AI_VIDEO_DUBBER_HOME` | Diretório-base do aplicativo | detectado automaticamente |
 
@@ -221,6 +225,58 @@ make build
 
 # Compilar apenas o CLI, inclusive em servidor sem desktop
 make build-cli
+```
+
+### Empacotamento macOS autocontido
+
+O script `scripts/package-macos.sh` monta um bundle `.app` com:
+
+- `Contents/MacOS/ai-video-dubber`
+- `Contents/Resources/python/bin/python3` com `openai-whisper` e `piper-tts`
+- `Contents/Resources/ffmpeg/ffmpeg` e `ffprobe`
+- tarball separado do CLI headless com o mesmo layout de runtime
+
+```bash
+make package-macos
+```
+
+Artefatos gerados:
+
+```text
+dist/AI-Video-Dubber.app
+dist/AI-Video-Dubber-cli-darwin-<arch>.tar.gz
+```
+
+Por padrão, o script descobre a release mais recente do
+`astral-sh/python-build-standalone` para Python 3.12 e baixa FFmpeg/FFprobe pela
+API do `evermeet.cx`. Para builds reprodutíveis ou fontes internas, use:
+
+```bash
+PYTHON_STANDALONE_URL=https://.../cpython-3.12.x+release-aarch64-apple-darwin-install_only.tar.gz \
+FFMPEG_BIN=/caminho/ffmpeg \
+FFPROBE_BIN=/caminho/ffprobe \
+make package-macos
+```
+
+Para distribuição arm64 estrita, prefira informar `FFMPEG_BIN` e `FFPROBE_BIN`
+com binários estáticos nativos da arquitetura alvo.
+
+Variáveis úteis:
+
+| Variável | Finalidade |
+|---|---|
+| `ARCH` | `arm64` ou `x86_64`; padrão: arquitetura local |
+| `PYTHON_VERSION_PREFIX` | Prefixo do asset Python; padrão: `cpython-3.12` |
+| `PYTHON_STANDALONE_URL` | URL exata do Python standalone, pulando a descoberta via GitHub |
+| `FFMPEG_URL` / `FFPROBE_URL` | URLs `.zip` alternativas para os binários estáticos |
+| `FFMPEG_BIN` / `FFPROBE_BIN` | Copia binários locais em vez de baixar |
+| `CODESIGN_IDENTITY` | Identidade para assinatura com hardened runtime |
+| `NOTARYTOOL_PROFILE` | Perfil do `notarytool` para notarização |
+
+Também é possível gerar apenas o tarball autocontido do CLI:
+
+```bash
+make package-cli
 ```
 
 Os testes da GUI usam a tag `ci`, que seleciona o driver de software do Fyne e não exige OpenGL/X11:

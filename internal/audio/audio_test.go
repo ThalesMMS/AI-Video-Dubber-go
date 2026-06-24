@@ -1,14 +1,18 @@
 package audio
 
 import (
+	"context"
 	"encoding/binary"
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/ai-video-dubber/ai-video-dubber-go/internal/executil"
 )
 
 func TestBuildPaths(t *testing.T) {
@@ -101,5 +105,25 @@ func TestCopyFileAtomicUsesReadablePermissions(t *testing.T) {
 	}
 	if got := info.Mode().Perm(); got != 0o644 {
 		t.Fatalf("destination permissions = %o, want 644", got)
+	}
+}
+
+func TestProbeDurationUsesRunnerToolPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script test")
+	}
+	dir := t.TempDir()
+	ffprobe := filepath.Join(dir, "ffprobe")
+	if err := os.WriteFile(ffprobe, []byte("#!/bin/sh\nprintf '12.500\\n'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runner := executil.Runner{Tools: map[string]string{"ffprobe": ffprobe}}
+
+	duration, err := ProbeDuration(context.Background(), runner, "input.mp4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if duration != 12500*time.Millisecond {
+		t.Fatalf("duration = %s", duration)
 	}
 }

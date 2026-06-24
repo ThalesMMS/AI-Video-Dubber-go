@@ -18,7 +18,9 @@ type LogFunc func(string)
 
 // Runner executes external commands.
 type Runner struct {
-	Log LogFunc
+	Log   LogFunc
+	Tools map[string]string
+	Env   []string
 }
 
 // Options configures one command invocation.
@@ -59,11 +61,12 @@ func (r Runner) Run(ctx context.Context, name string, args []string, options Opt
 	if options.ErrorTail <= 0 {
 		options.ErrorTail = 32 * 1024
 	}
-	cmd := exec.Command(name, args...)
+	commandName := r.commandName(name)
+	cmd := exec.Command(commandName, args...)
 	configureProcess(cmd)
 	cmd.Dir = options.Dir
-	if len(options.Env) > 0 {
-		cmd.Env = append(os.Environ(), options.Env...)
+	if env := r.commandEnv(options.Env); len(env) > 0 {
+		cmd.Env = env
 	}
 	cmd.Stdin = options.Stdin
 
@@ -72,7 +75,7 @@ func (r Runner) Run(ctx context.Context, name string, args []string, options Opt
 	cmd.Stderr = writer
 
 	if err := cmd.Start(); err != nil {
-		return &CommandError{Name: name, Args: append([]string(nil), args...), Err: err}
+		return &CommandError{Name: commandName, Args: append([]string(nil), args...), Err: err}
 	}
 
 	done := make(chan error, 1)
@@ -89,7 +92,7 @@ func (r Runner) Run(ctx context.Context, name string, args []string, options Opt
 	writer.Flush()
 	if err != nil {
 		return &CommandError{
-			Name:   name,
+			Name:   commandName,
 			Args:   append([]string(nil), args...),
 			Err:    err,
 			Output: writer.Tail(),
@@ -102,18 +105,19 @@ func (r Runner) Run(ctx context.Context, name string, args []string, options Opt
 func (r Runner) Output(ctx context.Context, name string, args []string, options Options) (string, error) {
 	var buffer bytes.Buffer
 	options.Quiet = true
-	cmd := exec.Command(name, args...)
+	commandName := r.commandName(name)
+	cmd := exec.Command(commandName, args...)
 	configureProcess(cmd)
 	cmd.Dir = options.Dir
-	if len(options.Env) > 0 {
-		cmd.Env = append(os.Environ(), options.Env...)
+	if env := r.commandEnv(options.Env); len(env) > 0 {
+		cmd.Env = env
 	}
 	cmd.Stdin = options.Stdin
 	cmd.Stdout = &buffer
 	cmd.Stderr = &buffer
 
 	if err := cmd.Start(); err != nil {
-		return "", &CommandError{Name: name, Args: append([]string(nil), args...), Err: err}
+		return "", &CommandError{Name: commandName, Args: append([]string(nil), args...), Err: err}
 	}
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
@@ -127,9 +131,28 @@ func (r Runner) Output(ctx context.Context, name string, args []string, options 
 		err = ctx.Err()
 	}
 	if err != nil {
-		return buffer.String(), &CommandError{Name: name, Args: append([]string(nil), args...), Err: err, Output: buffer.String()}
+		return buffer.String(), &CommandError{Name: commandName, Args: append([]string(nil), args...), Err: err, Output: buffer.String()}
 	}
 	return buffer.String(), nil
+}
+
+func (r Runner) commandName(name string) string {
+	if r.Tools != nil {
+		if resolved := strings.TrimSpace(r.Tools[name]); resolved != "" {
+			return resolved
+		}
+	}
+	return name
+}
+
+func (r Runner) commandEnv(optionEnv []string) []string {
+	if len(r.Env) == 0 && len(optionEnv) == 0 {
+		return nil
+	}
+	env := os.Environ()
+	env = append(env, r.Env...)
+	env = append(env, optionEnv...)
+	return env
 }
 
 // Require verifies that an executable is available in PATH.
