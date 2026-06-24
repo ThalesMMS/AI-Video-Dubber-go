@@ -6,3 +6,4 @@
 /logs
 /sample
 /.cache
+.DS_Store
