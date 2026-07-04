@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"image/color"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -18,6 +19,7 @@ import (
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/storage"
 	"fyne.io/fyne/v2/widget"
 
@@ -93,10 +95,12 @@ func newUI(application fyne.App, window fyne.Window, projectDir string) *ui {
 	result.start = widget.NewButton("▶  Start Dubbing", result.startPipeline)
 	result.start.Importance = widget.HighImportance
 	result.cancel = widget.NewButton("Cancel", result.cancelPipeline)
+	result.cancel.Importance = widget.DangerImportance
 	result.cancel.Disable()
 
 	result.logEntry = widget.NewMultiLineEntry()
 	result.logEntry.Wrapping = fyne.TextWrapWord
+	result.logEntry.TextStyle = fyne.TextStyle{Monospace: true}
 	result.logEntry.Disable()
 	result.steps = make([]*stepIndicator, pipeline.StepCount)
 	for index := pipeline.Step(0); index < pipeline.StepCount; index++ {
@@ -108,35 +112,44 @@ func newUI(application fyne.App, window fyne.Window, projectDir string) *ui {
 func (u *ui) content() fyne.CanvasObject {
 	headerIcon := canvas.NewImageFromResource(assets.Icon)
 	headerIcon.FillMode = canvas.ImageFillContain
-	headerIcon.SetMinSize(fyne.NewSize(48, 48))
+	headerIcon.SetMinSize(fyne.NewSize(40, 40))
+	iconBackground := canvas.NewRectangle(colorAccentSoft)
+	iconBackground.CornerRadius = 16
+	iconBackground.StrokeColor = colorBorder
+	iconBackground.StrokeWidth = 1
+	iconBadge := container.NewGridWrap(fyne.NewSize(64, 64), container.NewStack(iconBackground, container.NewPadded(headerIcon)))
+
 	title := canvas.NewText("AI Video Dubber", colorForeground)
 	title.TextSize = 28
 	title.TextStyle = fyne.TextStyle{Bold: true}
-	subtitle := canvas.NewText("Dub any video into another language automatically.", colorDim)
+	subtitle := canvas.NewText("Dub any video into another language, automatically.", colorDim)
 	subtitle.TextSize = 14
-	header := container.NewBorder(nil, nil, container.NewGridWrap(fyne.NewSize(56, 56), headerIcon), nil, container.NewVBox(title, subtitle))
+	header := container.NewBorder(nil, nil, iconBadge, nil, container.NewVBox(layout.NewSpacer(), title, subtitle, layout.NewSpacer()))
 
 	fileRow := container.NewBorder(nil, nil, nil, u.browse, u.fileLabel)
-	fileCard := card("① Select a video file", fileRow)
+	fileCard := card(1, "Select a video file", fileRow)
 
 	endpointRow := formRow("Endpoint:", u.apiBase, nil)
 	keyRow := formRow("API Key:", u.apiKey, nil)
 	hint := canvas.NewText("(blank = auto-detect)", colorDim)
 	hint.TextSize = 11
 	modelRow := formRow("Model:", u.model, hint)
-	llmCard := card("② LLM API settings (for translation)", container.NewVBox(endpointRow, keyRow, modelRow))
+	llmCard := card(2, "LLM API settings (for translation)", container.NewVBox(endpointRow, keyRow, modelRow))
 
-	languageCard := card("③ Choose target language", u.language)
+	languageCard := card(3, "Choose target language", u.language)
 
 	stepObjects := make([]fyne.CanvasObject, 0, len(u.steps)+1)
 	for _, indicator := range u.steps {
 		stepObjects = append(stepObjects, indicator.root)
 	}
 	logBackground := canvas.NewRectangle(colorInput)
+	logBackground.CornerRadius = 10
+	logBackground.StrokeColor = colorBorder
+	logBackground.StrokeWidth = 1
 	logBox := container.NewStack(logBackground, container.NewPadded(u.logEntry))
-	logBox = container.NewGridWrap(fyne.NewSize(680, 220), logBox)
-	stepObjects = append(stepObjects, logBox)
-	progressCard := card("④ Pipeline progress", container.NewVBox(stepObjects...))
+	logBox = container.NewGridWrap(fyne.NewSize(680, 200), logBox)
+	stepObjects = append(stepObjects, container.NewPadded(logBox))
+	progressCard := card(4, "Pipeline progress", container.NewVBox(stepObjects...))
 
 	body := container.NewVBox(
 		header,
@@ -146,18 +159,43 @@ func (u *ui) content() fyne.CanvasObject {
 		progressCard,
 	)
 	scroll := container.NewVScroll(container.NewPadded(body))
-	buttons := container.NewBorder(nil, nil, nil, container.NewGridWrap(fyne.NewSize(120, 48), u.cancel), u.start)
-	buttons = container.NewPadded(buttons)
-	return container.NewBorder(nil, buttons, nil, nil, scroll)
+
+	footerBackground := canvas.NewRectangle(colorCard)
+	footerBackground.TopLeftCornerRadius = 18
+	footerBackground.TopRightCornerRadius = 18
+	footerBackground.StrokeColor = colorBorder
+	footerBackground.StrokeWidth = 1
+	cancelCell := container.NewGridWrap(fyne.NewSize(140, 44), u.cancel)
+	buttons := container.NewBorder(nil, nil, nil, cancelCell, u.start)
+	footer := container.NewStack(footerBackground, container.NewPadded(buttons))
+	return container.NewBorder(nil, footer, nil, nil, scroll)
 }
 
-func card(titleText string, content fyne.CanvasObject) fyne.CanvasObject {
+func card(number int, titleText string, content fyne.CanvasObject) fyne.CanvasObject {
 	title := canvas.NewText(titleText, colorForeground)
 	title.TextSize = 16
 	title.TextStyle = fyne.TextStyle{Bold: true}
+	titleRow := container.NewBorder(nil, nil, badge(number, colorAccentSoft, colorAccent), nil, container.NewCenter(title))
+
 	background := canvas.NewRectangle(colorCard)
+	background.CornerRadius = 14
+	background.StrokeColor = colorBorder
+	background.StrokeWidth = 1
 	body := container.NewStack(background, container.NewPadded(content))
-	return container.NewVBox(title, body)
+	return container.NewVBox(titleRow, body)
+}
+
+// badge draws a small rounded numbered chip, used both for section headers
+// and (via stepIndicator) the pipeline progress list, so both share one
+// consistent "numbered stepper" visual language.
+func badge(number int, background, foreground color.Color) fyne.CanvasObject {
+	circle := canvas.NewRectangle(background)
+	circle.CornerRadius = 13
+	text := canvas.NewText(fmt.Sprintf("%d", number), foreground)
+	text.TextSize = 14
+	text.TextStyle = fyne.TextStyle{Bold: true}
+	text.Alignment = fyne.TextAlignCenter
+	return container.NewGridWrap(fyne.NewSize(26, 26), container.NewStack(circle, container.NewCenter(text)))
 }
 
 func formRow(labelText string, control fyne.CanvasObject, trailing fyne.CanvasObject) fyne.CanvasObject {
