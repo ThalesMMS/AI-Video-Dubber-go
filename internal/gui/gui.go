@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
@@ -29,7 +30,10 @@ import (
 	"github.com/ai-video-dubber/ai-video-dubber-go/internal/pipeline"
 )
 
-const maxLogBytes = 240_000
+const (
+	maxLogBytes        = 64_000
+	logRefreshInterval = 100 * time.Millisecond
+)
 
 // Run creates the desktop application and blocks until it exits.
 func Run(projectDir string) {
@@ -66,6 +70,9 @@ type ui struct {
 	logFile    *os.File
 	cancelRun  context.CancelFunc
 	running    bool
+
+	logRefreshPending bool
+	logRefreshDirty   bool
 }
 
 func newUI(application fyne.App, window fyne.Window, projectDir string) *ui {
@@ -338,6 +345,8 @@ func (u *ui) setRunning(running bool) {
 func (u *ui) resetRun() {
 	u.mu.Lock()
 	u.logBuilder.Reset()
+	u.logRefreshPending = false
+	u.logRefreshDirty = false
 	u.mu.Unlock()
 	u.logEntry.SetText("")
 	for _, indicator := range u.steps {
@@ -385,32 +394,72 @@ func (u *ui) closeLogFile() {
 // OnLog implements pipeline.Observer.
 func (u *ui) OnLog(line string) {
 	u.mu.Lock()
-	if u.logBuilder.Len() > 0 {
-		u.logBuilder.WriteByte('\n')
-	}
-	u.logBuilder.WriteString(line)
-	text := u.logBuilder.String()
-	if len(text) > maxLogBytes {
-		text = strings.ToValidUTF8(text[len(text)-maxLogBytes:], "")
-		if newline := strings.IndexByte(text, '\n'); newline >= 0 {
-			text = text[newline+1:]
-		}
-		u.logBuilder.Reset()
-		u.logBuilder.WriteString(text)
-	}
+	appendDisplayLog(&u.logBuilder, line, maxLogBytes)
 	if u.logFile != nil && strings.TrimSpace(line) != "" {
 		u.logFile.WriteString("[" + time.Now().Format("15:04:05") + "] " + line + "\n")
 	}
+	if u.logRefreshPending {
+		u.logRefreshDirty = true
+		u.mu.Unlock()
+		return
+	}
+	u.logRefreshPending = true
 	u.mu.Unlock()
-	fyne.Do(func() {
-		u.logEntry.SetText(text)
-		lines := strings.Split(text, "\n")
-		u.logEntry.CursorRow = len(lines) - 1
-		if len(lines) > 0 {
-			u.logEntry.CursorColumn = len([]rune(lines[len(lines)-1]))
-		}
-		u.logEntry.Refresh()
+	u.scheduleLogRefresh()
+}
+
+func (u *ui) scheduleLogRefresh() {
+	time.AfterFunc(logRefreshInterval, func() {
+		fyne.Do(u.flushLogEntry)
 	})
+}
+
+func (u *ui) flushLogEntry() {
+	u.mu.Lock()
+	text := u.logBuilder.String()
+	u.logRefreshDirty = false
+	u.mu.Unlock()
+
+	u.logEntry.SetText(text)
+	u.logEntry.CursorRow, u.logEntry.CursorColumn = cursorEnd(text)
+	u.logEntry.Refresh()
+
+	u.mu.Lock()
+	needsRefresh := u.logRefreshDirty
+	if needsRefresh {
+		u.logRefreshDirty = false
+	} else {
+		u.logRefreshPending = false
+	}
+	u.mu.Unlock()
+	if needsRefresh {
+		u.scheduleLogRefresh()
+	}
+}
+
+func appendDisplayLog(builder *strings.Builder, line string, maxBytes int) string {
+	if builder.Len() > 0 {
+		builder.WriteByte('\n')
+	}
+	builder.WriteString(line)
+	text := builder.String()
+	if maxBytes <= 0 || len(text) <= maxBytes {
+		return text
+	}
+	text = strings.ToValidUTF8(text[len(text)-maxBytes:], "")
+	if newline := strings.IndexByte(text, '\n'); newline >= 0 {
+		text = text[newline+1:]
+	}
+	builder.Reset()
+	builder.WriteString(text)
+	return text
+}
+
+func cursorEnd(text string) (row, column int) {
+	row = strings.Count(text, "\n")
+	lastLineStart := strings.LastIndexByte(text, '\n') + 1
+	column = utf8.RuneCountInString(text[lastLineStart:])
+	return row, column
 }
 
 // OnStep implements pipeline.Observer.
