@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -147,5 +148,58 @@ func TestEnsureVoiceRejectsChecksumMismatch(t *testing.T) {
 	_, _, err := ensureVoice(context.Background(), executil.Runner{}, "python", voice, dir)
 	if err == nil || !strings.Contains(err.Error(), "checksum") {
 		t.Fatalf("ensureVoice error = %v, want checksum mismatch", err)
+	}
+}
+
+func TestPiperWorkerHandlesMultipleSynthesisRequests(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script test")
+	}
+	dir := t.TempDir()
+	python := filepath.Join(dir, "python")
+	starts := filepath.Join(dir, "piper-starts")
+	t.Setenv("PIPER_STARTS", starts)
+	if err := os.WriteFile(python, []byte(`#!/bin/sh
+printf 'start\n' >> "$PIPER_STARTS"
+if [ "$1" = "-u" ]; then
+  printf '{"ready":true}\n'
+  while IFS= read -r line; do
+    output=$(printf '%s\n' "$line" | sed -n 's/.*"output_path":"\([^"]*\)".*/\1/p')
+    if [ -z "$output" ]; then
+      printf '{"error":"missing output_path"}\n'
+      continue
+    fi
+    printf wav > "$output"
+    printf '{"ok":true}\n'
+  done
+  exit 0
+fi
+exit 1
+`), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	worker, err := startPiperWorker(context.Background(), executil.Runner{}, python, "voice.onnx", "voice.onnx.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer worker.Close()
+
+	for index := 0; index < 2; index++ {
+		output := filepath.Join(dir, fmt.Sprintf("out-%d.wav", index))
+		if err := worker.synthesize(context.Background(), "hello", output, 1.0, 0.667, 0.8, Defaults()); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(output); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	data, err := os.ReadFile(starts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count := strings.Count(string(data), "start\n"); count != 1 {
+		t.Fatalf("piper starts = %d, want one worker process; starts log:\n%s", count, string(data))
 	}
 }

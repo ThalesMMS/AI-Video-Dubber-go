@@ -2,6 +2,7 @@
 package tts
 
 import (
+	"bufio"
 	"context"
 	"crypto/md5"
 	"encoding/json"
@@ -10,10 +11,12 @@ import (
 	"math"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -25,6 +28,74 @@ import (
 const privateReportFileMode os.FileMode = 0o600
 
 var piperVoicesIndexURL = "https://huggingface.co/rhasspy/piper-voices/raw/main/voices.json"
+
+const piperWorkerScript = `
+import inspect
+import json
+import sys
+import traceback
+import wave
+
+try:
+    from piper import PiperVoice
+    try:
+        from piper import SynthesisConfig
+    except Exception:
+        SynthesisConfig = None
+except Exception:
+    from piper.voice import PiperVoice
+    SynthesisConfig = None
+
+model_path, config_path = sys.argv[1:3]
+voice = PiperVoice.load(model_path, config_path)
+print(json.dumps({"ready": True}), flush=True)
+
+def synthesize_request(request):
+    speaker = request.get("speaker")
+    length_scale = request.get("length_scale")
+    noise_scale = request.get("noise_scale")
+    noise_w = request.get("noise_w")
+    sentence_silence = request.get("sentence_silence", 0.0)
+    with wave.open(request["output_path"], "wb") as wav_file:
+        synthesize = getattr(voice, "synthesize", None)
+        if synthesize is not None and "wav_file" in inspect.signature(synthesize).parameters:
+            synthesize(
+                request["text"],
+                wav_file,
+                speaker_id=speaker,
+                length_scale=length_scale,
+                noise_scale=noise_scale,
+                noise_w=noise_w,
+                sentence_silence=sentence_silence,
+            )
+            return
+
+        synthesize_wav = getattr(voice, "synthesize_wav")
+        syn_config = None
+        if SynthesisConfig is not None:
+            values = {
+                "speaker_id": speaker,
+                "length_scale": length_scale,
+                "noise_scale": noise_scale,
+                "noise_w_scale": noise_w,
+                "sentence_silence": sentence_silence,
+            }
+            accepted = inspect.signature(SynthesisConfig).parameters
+            kwargs = {key: value for key, value in values.items() if value is not None and key in accepted}
+            syn_config = SynthesisConfig(**kwargs)
+
+        if syn_config is not None and "syn_config" in inspect.signature(synthesize_wav).parameters:
+            synthesize_wav(request["text"], wav_file, syn_config=syn_config)
+        else:
+            synthesize_wav(request["text"], wav_file)
+
+for line in sys.stdin:
+    try:
+        synthesize_request(json.loads(line))
+        print(json.dumps({"ok": True}), flush=True)
+    except Exception as exc:
+        print(json.dumps({"error": str(exc), "traceback": traceback.format_exc()}), flush=True)
+`
 
 var (
 	sentenceEnd     = regexp.MustCompile(`[.!?…:][\]\)"'”’]*\s*$`)
@@ -100,6 +171,23 @@ type GroupReport struct {
 	SampleRate        int     `json:"sample_rate"`
 }
 
+type piperRequest struct {
+	Text            string  `json:"text"`
+	OutputPath      string  `json:"output_path"`
+	Speaker         *int    `json:"speaker,omitempty"`
+	LengthScale     float64 `json:"length_scale"`
+	NoiseScale      float64 `json:"noise_scale"`
+	NoiseW          float64 `json:"noise_w"`
+	SentenceSilence float64 `json:"sentence_silence"`
+}
+
+type piperResponse struct {
+	Ready bool   `json:"ready"`
+	OK    bool   `json:"ok"`
+	Error string `json:"error"`
+	Trace string `json:"traceback"`
+}
+
 // Prepare verifies Piper and downloads the selected voice if needed.
 func Prepare(ctx context.Context, runner executil.Runner, pythonExe, voice, dataDir string) error {
 	if err := ensurePiper(ctx, runner, pythonExe); err != nil {
@@ -147,6 +235,11 @@ func Synthesize(
 	if err != nil {
 		return err
 	}
+	piper, err := startPiperWorker(ctx, runner, pythonExe, modelPath, configPath)
+	if err != nil {
+		return fmt.Errorf("start Piper worker: %w", err)
+	}
+	defer piper.Close()
 
 	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
 		return fmt.Errorf("create audio output directory: %w", err)
@@ -181,7 +274,7 @@ func Synthesize(
 			parts = append(parts, silencePath)
 		}
 
-		attempts, err := synthesizeAttempts(ctx, runner, pythonExe, modelPath, configPath, group, workDir, voiceDefaults, options)
+		attempts, err := synthesizeAttempts(ctx, runner, piper, group, workDir, voiceDefaults, options)
 		if err != nil {
 			return err
 		}
@@ -563,7 +656,188 @@ func loadVoiceDefaults(path string) (voiceConfig, error) {
 	return result, nil
 }
 
-func synthesizeAttempts(ctx context.Context, runner executil.Runner, pythonExe, modelPath, configPath string, group Group, workDir string, defaults voiceConfig, options Options) ([]attempt, error) {
+type piperWorker struct {
+	mu        sync.Mutex
+	cmd       *exec.Cmd
+	stdin     io.WriteCloser
+	responses chan piperResponse
+	done      chan struct{}
+	waitMu    sync.Mutex
+	waitErr   error
+	log       executil.LogFunc
+	closeOnce sync.Once
+}
+
+func startPiperWorker(ctx context.Context, runner executil.Runner, pythonExe, modelPath, configPath string) (*piperWorker, error) {
+	cmd := exec.Command(pythonExe, "-u", "-c", piperWorkerScript, modelPath, configPath)
+	executil.ConfigureProcess(cmd)
+	if len(runner.Env) > 0 {
+		cmd.Env = append(os.Environ(), runner.Env...)
+	}
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, err
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return nil, err
+	}
+	worker := &piperWorker{
+		cmd:       cmd,
+		stdin:     stdin,
+		responses: make(chan piperResponse),
+		done:      make(chan struct{}),
+		log:       runner.Log,
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	go worker.readResponses(stdout)
+	go worker.readLogs(stderr)
+	go worker.wait()
+
+	for {
+		select {
+		case response, ok := <-worker.responses:
+			if !ok {
+				worker.Close()
+				return nil, fmt.Errorf("Piper worker exited before reporting readiness")
+			}
+			if response.Error != "" {
+				worker.Close()
+				return nil, piperResponseError(response)
+			}
+			if response.Ready {
+				return worker, nil
+			}
+		case <-worker.done:
+			worker.Close()
+			if err := worker.waitError(); err != nil {
+				return nil, fmt.Errorf("Piper worker exited before readiness: %w", err)
+			}
+			return nil, fmt.Errorf("Piper worker exited before readiness")
+		case <-ctx.Done():
+			worker.Close()
+			return nil, ctx.Err()
+		}
+	}
+}
+
+func (w *piperWorker) wait() {
+	err := w.cmd.Wait()
+	w.waitMu.Lock()
+	w.waitErr = err
+	w.waitMu.Unlock()
+	close(w.done)
+}
+
+func (w *piperWorker) waitError() error {
+	w.waitMu.Lock()
+	defer w.waitMu.Unlock()
+	return w.waitErr
+}
+
+func (w *piperWorker) readResponses(stdout io.Reader) {
+	scanner := bufio.NewScanner(stdout)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		var response piperResponse
+		if err := json.Unmarshal([]byte(line), &response); err != nil {
+			if w.log != nil {
+				w.log("Piper worker: " + line)
+			}
+			continue
+		}
+		w.responses <- response
+	}
+	if err := scanner.Err(); err != nil && w.log != nil {
+		w.log("Piper worker stdout: " + err.Error())
+	}
+	close(w.responses)
+}
+
+func (w *piperWorker) readLogs(stderr io.Reader) {
+	scanner := bufio.NewScanner(stderr)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line != "" && w.log != nil {
+			w.log("Piper worker: " + line)
+		}
+	}
+}
+
+func (w *piperWorker) synthesize(ctx context.Context, text, outputPath string, lengthScale, noiseScale, noiseW float64, options Options) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	request := piperRequest{
+		Text:            text,
+		OutputPath:      outputPath,
+		Speaker:         options.Speaker,
+		LengthScale:     lengthScale,
+		NoiseScale:      noiseScale,
+		NoiseW:          noiseW,
+		SentenceSilence: options.SentenceSilence,
+	}
+	payload, err := json.Marshal(request)
+	if err != nil {
+		return err
+	}
+	if _, err := w.stdin.Write(append(payload, '\n')); err != nil {
+		return fmt.Errorf("send Piper request: %w", err)
+	}
+	for {
+		select {
+		case response, ok := <-w.responses:
+			if !ok {
+				return fmt.Errorf("Piper worker exited")
+			}
+			if response.Error != "" {
+				return piperResponseError(response)
+			}
+			if response.OK {
+				return nil
+			}
+		case <-w.done:
+			if err := w.waitError(); err != nil {
+				return fmt.Errorf("Piper worker exited: %w", err)
+			}
+			return fmt.Errorf("Piper worker exited")
+		case <-ctx.Done():
+			w.Close()
+			return ctx.Err()
+		}
+	}
+}
+
+func (w *piperWorker) Close() {
+	w.closeOnce.Do(func() {
+		if w.stdin != nil {
+			_ = w.stdin.Close()
+		}
+		executil.TerminateProcess(w.cmd)
+		select {
+		case <-w.done:
+		case <-time.After(2 * time.Second):
+		}
+	})
+}
+
+func piperResponseError(response piperResponse) error {
+	if strings.TrimSpace(response.Trace) != "" {
+		return fmt.Errorf("%s\n%s", response.Error, strings.TrimSpace(response.Trace))
+	}
+	return fmt.Errorf("%s", response.Error)
+}
+
+func synthesizeAttempts(ctx context.Context, runner executil.Runner, piper *piperWorker, group Group, workDir string, defaults voiceConfig, options Options) ([]attempt, error) {
 	baseScale := defaults.LengthScale
 	if options.LengthScale != nil {
 		baseScale = *options.LengthScale
@@ -583,8 +857,8 @@ func synthesizeAttempts(ctx context.Context, runner executil.Runner, pythonExe, 
 			return nil, err
 		}
 		path := filepath.Join(workDir, fmt.Sprintf("%04d_raw_%02d.wav", group.ID, index+1))
-		if err := synthesizePiper(ctx, runner, pythonExe, modelPath, configPath, group.Text, path, scale, noiseScale, noiseW, options); err != nil {
-			return nil, err
+		if err := piper.synthesize(ctx, group.Text, path, scale, noiseScale, noiseW, options); err != nil {
+			return nil, fmt.Errorf("Piper synthesis failed: %w", err)
 		}
 		duration, err := audio.ProbeDuration(ctx, runner, path)
 		if err != nil {
@@ -597,36 +871,6 @@ func synthesizeAttempts(ctx context.Context, runner executil.Runner, pythonExe, 
 		return nil, fmt.Errorf("Piper produced no attempts for group %d", group.ID)
 	}
 	return attempts, nil
-}
-
-func synthesizePiper(ctx context.Context, runner executil.Runner, pythonExe, modelPath, configPath, text, outputPath string, lengthScale, noiseScale, noiseW float64, options Options) error {
-	variants := [][4]string{
-		{"--length-scale", "--noise-scale", "--noise-w", "--sentence-silence"},
-		{"--length_scale", "--noise_scale", "--noise_w", "--sentence_silence"},
-	}
-	var lastErr error
-	for _, flags := range variants {
-		args := []string{
-			"-m", "piper", "-m", modelPath, "-c", configPath, "-f", outputPath,
-			flags[0], fmt.Sprintf("%.4f", lengthScale),
-			flags[1], fmt.Sprintf("%.4f", noiseScale),
-			flags[2], fmt.Sprintf("%.4f", noiseW),
-			flags[3], fmt.Sprintf("%.3f", options.SentenceSilence),
-		}
-		if options.Speaker != nil {
-			args = append(args, "--speaker", fmt.Sprintf("%d", *options.Speaker))
-		}
-		// Piper's CLI accepts one positional text argument after "--". Both
-		// hyphenated and underscored flag spellings are tried for version
-		// compatibility, matching the Python implementation.
-		args = append(args, "--", text)
-		if err := runner.Run(ctx, pythonExe, args, executil.Options{Quiet: true}); err == nil {
-			return nil
-		} else {
-			lastErr = err
-		}
-	}
-	return fmt.Errorf("Piper synthesis failed: %w", lastErr)
 }
 
 func chooseScaleCandidates(base float64, target time.Duration, minScale, maxScale float64) []float64 {
