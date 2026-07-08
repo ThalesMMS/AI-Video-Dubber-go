@@ -30,6 +30,29 @@ func Setup(ctx context.Context, runner executil.Runner, cfg config.Config, voice
 
 // SetupRuntime creates the virtual environment and installs Whisper/Piper when missing.
 func SetupRuntime(ctx context.Context, runner executil.Runner, cfg config.Config) (string, error) {
+	return setupRuntime(ctx, runner, cfg, runtimeDependencies{
+		Name:        "Whisper/Piper",
+		Verify:      verifyPythonDependencies,
+		InstallArgs: []string{"-m", "pip", "install", "--upgrade", "openai-whisper", "piper-tts"},
+	})
+}
+
+// SetupWhisperRuntime creates the runtime needed for transcription-only flows.
+func SetupWhisperRuntime(ctx context.Context, runner executil.Runner, cfg config.Config) (string, error) {
+	return setupRuntime(ctx, runner, cfg, runtimeDependencies{
+		Name:        "Whisper",
+		Verify:      verifyWhisperDependency,
+		InstallArgs: []string{"-m", "pip", "install", "--upgrade", "openai-whisper"},
+	})
+}
+
+type runtimeDependencies struct {
+	Name        string
+	Verify      func(context.Context, executil.Runner, string) error
+	InstallArgs []string
+}
+
+func setupRuntime(ctx context.Context, runner executil.Runner, cfg config.Config, deps runtimeDependencies) (string, error) {
 	for _, executable := range []string{cfg.FFmpegBin, cfg.FFprobeBin, cfg.PythonBin} {
 		if err := executil.Require(executable); err != nil {
 			return "", err
@@ -39,8 +62,8 @@ func SetupRuntime(ctx context.Context, runner executil.Runner, cfg config.Config
 		return "", err
 	}
 	if config.IsBundledPython(cfg.PythonBin) {
-		if err := verifyPythonDependencies(ctx, runner, cfg.PythonBin); err != nil {
-			return "", fmt.Errorf("bundled Python is missing Whisper/Piper dependencies: %w", err)
+		if err := deps.Verify(ctx, runner, cfg.PythonBin); err != nil {
+			return "", fmt.Errorf("bundled Python is missing %s dependencies: %w", deps.Name, err)
 		}
 		if runner.Log != nil {
 			runner.Log("Using bundled Python runtime.")
@@ -66,21 +89,28 @@ func SetupRuntime(ctx context.Context, runner executil.Runner, cfg config.Config
 		}
 	}
 
-	if err := verifyPythonDependencies(ctx, runner, pythonExe); err != nil {
+	if err := deps.Verify(ctx, runner, pythonExe); err != nil {
 		if runner.Log != nil {
-			runner.Log("Installing Whisper and Piper dependencies (first run may take several minutes)...")
+			runner.Log("Installing " + deps.Name + " dependencies (first run may take several minutes)...")
 		}
 		if err := runner.Run(ctx, pythonExe, []string{"-m", "pip", "install", "--upgrade", "pip", "wheel", "setuptools"}, executil.Options{}); err != nil {
 			return "", fmt.Errorf("upgrade Python packaging tools: %w", err)
 		}
-		if err := runner.Run(ctx, pythonExe, []string{"-m", "pip", "install", "--upgrade", "openai-whisper", "piper-tts"}, executil.Options{}); err != nil {
-			return "", fmt.Errorf("install Whisper/Piper dependencies: %w", err)
+		if err := runner.Run(ctx, pythonExe, deps.InstallArgs, executil.Options{}); err != nil {
+			return "", fmt.Errorf("install %s dependencies: %w", deps.Name, err)
 		}
 	} else if runner.Log != nil {
 		runner.Log("Python dependencies are already installed.")
 	}
 
 	return pythonExe, nil
+}
+
+func verifyWhisperDependency(ctx context.Context, runner executil.Runner, pythonExe string) error {
+	if _, err := runner.Output(ctx, pythonExe, []string{"-c", "import whisper"}, executil.Options{}); err != nil {
+		return fmt.Errorf("import whisper: %w", err)
+	}
+	return nil
 }
 
 func verifyPythonDependencies(ctx context.Context, runner executil.Runner, pythonExe string) error {

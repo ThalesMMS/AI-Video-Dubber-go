@@ -101,6 +101,31 @@ func TestTranslateFileAgainstOpenAICompatibleServer(t *testing.T) {
 	}
 }
 
+func TestTranslateFileWritesEmptyOutputForEmptySRT(t *testing.T) {
+	dir := t.TempDir()
+	input := filepath.Join(dir, "empty.srt")
+	output := filepath.Join(dir, "empty.pt-BR.srt")
+	if err := os.WriteFile(input, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var logs []string
+	client := Client{APIBase: "http://127.0.0.1:1", Log: func(line string) { logs = append(logs, line) }}
+
+	if err := client.TranslateFile(context.Background(), input, output, "Brazilian Portuguese (pt-BR)", 10); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data) != 0 {
+		t.Fatalf("output = %q, want empty SRT", data)
+	}
+	if len(logs) != 1 || !strings.Contains(logs[0], "No subtitle entries") {
+		t.Fatalf("logs = %#v", logs)
+	}
+}
+
 func TestValidateAPIBase(t *testing.T) {
 	for _, base := range []string{"", "ftp://host", "http://", "http://host/path?q=x", "http://host/#fragment"} {
 		if err := validateAPIBase(base); err == nil {

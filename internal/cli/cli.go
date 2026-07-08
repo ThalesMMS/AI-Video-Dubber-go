@@ -43,6 +43,8 @@ func Run(args []string, projectDir string) int {
 	switch command {
 	case "dub":
 		err = runDub(ctx, commandArgs, projectDir)
+	case "subtitle":
+		err = runSubtitle(ctx, commandArgs, projectDir)
 	case "extract":
 		err = runExtract(ctx, commandArgs, projectDir)
 	case "transcribe":
@@ -64,6 +66,9 @@ func Run(args []string, projectDir string) int {
 	if err == nil {
 		return 0
 	}
+	if errors.Is(err, flag.ErrHelp) {
+		return 0
+	}
 	if errors.Is(err, context.Canceled) {
 		fmt.Fprintln(os.Stderr, "cancelled")
 		return 130
@@ -78,8 +83,26 @@ func (consoleObserver) OnLog(line string)                    { fmt.Fprintln(os.S
 func (consoleObserver) OnStep(pipeline.Step, pipeline.State) {}
 
 func runDub(ctx context.Context, args []string, projectDir string) error {
+	cfg, err := parseCompleteRunConfig("dub", args, config.ModeDub)
+	if err != nil {
+		return err
+	}
+	_, err = (pipeline.Pipeline{ProjectDir: projectDir, Observer: consoleObserver{}}).Run(ctx, cfg)
+	return err
+}
+
+func runSubtitle(ctx context.Context, args []string, projectDir string) error {
+	cfg, err := parseCompleteRunConfig("subtitle", args, config.ModeSubtitle)
+	if err != nil {
+		return err
+	}
+	_, err = (pipeline.Pipeline{ProjectDir: projectDir, Observer: consoleObserver{}}).Run(ctx, cfg)
+	return err
+}
+
+func parseCompleteRunConfig(name string, args []string, mode config.Mode) (config.Config, error) {
 	defaults := config.Defaults()
-	set := newFlagSet("dub")
+	set := newFlagSet(name)
 	input := set.String("input", "", "input video (required)")
 	output := set.String("output", "", "final output video")
 	lang := set.String("language", defaults.LanguageCode, "target language: pt-BR, es, fr, de, it")
@@ -90,16 +113,29 @@ func runDub(ctx context.Context, args []string, projectDir string) error {
 	sourceLanguage := set.String("source-language", defaults.SourceLanguage, "source audio language code")
 	python := set.String("python", defaults.PythonBin, "system Python executable")
 	venv := set.String("venv", os.Getenv("VENV_DIR"), "Python virtual environment directory")
-	dataDir := set.String("data-dir", envOr("DATA_DIR", defaults.VoiceDataDir), "Piper voice directory")
 	force := set.Bool("force", false, "regenerate intermediate files")
-	keepTemp := set.Bool("keep-temp", false, "keep TTS intermediate WAV files")
+	dataDir := defaults.VoiceDataDir
+	keepTemp := false
+	var dataDirFlag *string
+	var keepTempFlag *bool
+	if mode == config.ModeDub {
+		dataDirFlag = set.String("data-dir", envOr("DATA_DIR", defaults.VoiceDataDir), "Piper voice directory")
+		keepTempFlag = set.Bool("keep-temp", false, "keep TTS intermediate WAV files")
+	}
 	if err := set.Parse(args); err != nil {
-		return err
+		return config.Config{}, err
+	}
+	if dataDirFlag != nil {
+		dataDir = *dataDirFlag
+	}
+	if keepTempFlag != nil {
+		keepTemp = *keepTempFlag
 	}
 	if strings.TrimSpace(*input) == "" {
-		return fmt.Errorf("--input is required")
+		return config.Config{}, fmt.Errorf("--input is required")
 	}
 	cfg := defaults
+	cfg.Mode = mode
 	cfg.InputPath = *input
 	cfg.OutputPath = *output
 	cfg.LanguageCode = *lang
@@ -110,11 +146,10 @@ func runDub(ctx context.Context, args []string, projectDir string) error {
 	cfg.SourceLanguage = *sourceLanguage
 	cfg.PythonBin = *python
 	cfg.VenvDir = *venv
-	cfg.VoiceDataDir = *dataDir
+	cfg.VoiceDataDir = dataDir
 	cfg.Force = *force
-	cfg.KeepTemp = *keepTemp
-	_, err := (pipeline.Pipeline{ProjectDir: projectDir, Observer: consoleObserver{}}).Run(ctx, cfg)
-	return err
+	cfg.KeepTemp = keepTemp
+	return cfg, nil
 }
 
 func runExtract(ctx context.Context, args []string, projectDir string) error {
@@ -343,6 +378,7 @@ func printUsage(writer *os.File) {
 Usage:
   ai-video-dubber                         Open the graphical interface
   ai-video-dubber dub --input VIDEO [options]
+  ai-video-dubber subtitle --input VIDEO [options]
   ai-video-dubber extract --input VIDEO [--output AUDIO]
   ai-video-dubber transcribe --input AUDIO [options]
   ai-video-dubber translate --input FILE.srt [options]

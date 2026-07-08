@@ -60,6 +60,50 @@ exit 9
 	}
 }
 
+func TestSetupWhisperRuntimeDoesNotRequirePiper(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script test")
+	}
+	dir := t.TempDir()
+	project := filepath.Join(dir, "project")
+	resources := filepath.Join(dir, "AI-Video-Dubber.app", "Contents", "Resources")
+	python := filepath.Join(resources, "python", "bin", "python3")
+	ffmpeg := filepath.Join(resources, "ffmpeg", "ffmpeg")
+	ffprobe := filepath.Join(resources, "ffmpeg", "ffprobe")
+
+	writeExecutable(t, python, `#!/bin/sh
+if [ "$1" = "-c" ]; then
+  case "$2" in
+    *version_info*) printf '3.12\n'; exit 0 ;;
+    *"import whisper"*) exit 0 ;;
+    *"import whisper, piper"*) exit 9 ;;
+  esac
+fi
+if [ "$1" = "-m" ] && [ "$2" = "piper" ]; then
+  exit 9
+fi
+printf 'unexpected python invocation: %s\n' "$*" >&2
+exit 9
+`)
+	writeExecutable(t, ffmpeg, "#!/bin/sh\nexit 0\n")
+	writeExecutable(t, ffprobe, "#!/bin/sh\nexit 0\n")
+
+	cfg := (config.Config{
+		PythonBin:  python,
+		FFmpegBin:  ffmpeg,
+		FFprobeBin: ffprobe,
+	}).Normalize(project)
+	runner := executil.Runner{Tools: cfg.ToolPaths(), Env: cfg.RuntimeEnv()}
+
+	pythonExe, err := SetupWhisperRuntime(context.Background(), runner, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pythonExe != python {
+		t.Fatalf("pythonExe = %q, want %q", pythonExe, python)
+	}
+}
+
 func writeExecutable(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

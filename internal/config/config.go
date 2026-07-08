@@ -2,6 +2,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,8 +18,17 @@ const (
 	DefaultBatchSize      = 15
 )
 
+// Mode selects which final artifact the complete pipeline creates.
+type Mode string
+
+const (
+	ModeDub      Mode = "dub"
+	ModeSubtitle Mode = "subtitle"
+)
+
 // Config configures a complete dubbing run.
 type Config struct {
+	Mode                 Mode
 	InputPath            string
 	OutputPath           string
 	LanguageCode         string
@@ -48,6 +58,7 @@ type BundledResources struct {
 // Defaults returns platform-aware defaults.
 func Defaults() Config {
 	return Config{
+		Mode:                 ModeDub,
 		LanguageCode:         "pt-BR",
 		APIBase:              DefaultAPIBase,
 		APIKey:               DefaultAPIKey,
@@ -65,6 +76,11 @@ func Defaults() Config {
 // Normalize fills empty values and cleans path-like values.
 func (c Config) Normalize(projectDir string) Config {
 	defaults := Defaults()
+	mode, err := ParseMode(string(c.Mode))
+	if err != nil {
+		mode = defaults.Mode
+	}
+	c.Mode = mode
 	if strings.TrimSpace(c.LanguageCode) == "" {
 		c.LanguageCode = defaults.LanguageCode
 	}
@@ -103,6 +119,19 @@ func (c Config) Normalize(projectDir string) Config {
 		c.TranslationBatchSize = defaults.TranslationBatchSize
 	}
 	return c
+}
+
+// ParseMode resolves user-facing mode strings.
+func ParseMode(value string) (Mode, error) {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	switch normalized {
+	case "", string(ModeDub), "dubbing", "dublar":
+		return ModeDub, nil
+	case string(ModeSubtitle), "subtitles", "subtitling", "caption", "captions", "legendar":
+		return ModeSubtitle, nil
+	default:
+		return "", fmt.Errorf("unsupported mode %q; supported: dub, subtitle", value)
+	}
 }
 
 func defaultPython() string {

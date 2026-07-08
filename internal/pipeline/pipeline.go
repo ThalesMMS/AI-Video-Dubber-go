@@ -18,7 +18,7 @@ import (
 	"github.com/ai-video-dubber/ai-video-dubber-go/internal/tts"
 )
 
-// Step identifies one of the six GUI-visible stages.
+// Step identifies one visible stage by ordinal in the selected run mode.
 type Step int
 
 const (
@@ -50,6 +50,26 @@ var StepLabels = [StepCount]string{
 	"Merge final video",
 }
 
+var subtitleStepLabels = []string{
+	"Setup environment",
+	"Extract audio",
+	"Transcribe (Whisper)",
+	"Translate subtitles",
+	"Create subtitled video",
+}
+
+// StepLabelsForMode returns the visible progress labels for a complete run mode.
+func StepLabelsForMode(mode config.Mode) []string {
+	parsedMode, err := config.ParseMode(string(mode))
+	if err != nil {
+		parsedMode = config.ModeDub
+	}
+	if parsedMode == config.ModeSubtitle {
+		return append([]string(nil), subtitleStepLabels...)
+	}
+	return append([]string(nil), StepLabels[:]...)
+}
+
 // Observer receives thread-safe logical events; GUI implementations marshal
 // updates onto their UI thread.
 type Observer interface {
@@ -59,18 +79,22 @@ type Observer interface {
 
 // Result contains all deterministic output paths.
 type Result struct {
-	Paths audio.Paths
+	Paths       audio.Paths
+	OutputVideo string
+	SubtitleSRT string
 }
 
 // Pipeline is reusable by the GUI and CLI.
 type Pipeline struct {
 	ProjectDir string
 	Observer   Observer
+	stepLabels []string
 }
 
 // Run executes the complete local pipeline.
 func (p Pipeline) Run(ctx context.Context, rawConfig config.Config) (Result, error) {
 	cfg := rawConfig.Normalize(p.ProjectDir)
+	p.stepLabels = StepLabelsForMode(cfg.Mode)
 	lang, err := language.ByCode(cfg.LanguageCode)
 	if err != nil {
 		return Result{}, err
@@ -82,7 +106,7 @@ func (p Pipeline) Run(ctx context.Context, rawConfig config.Config) (Result, err
 	if !inputInfo.Mode().IsRegular() {
 		return Result{}, fmt.Errorf("input is not a regular file: %s", cfg.InputPath)
 	}
-	paths, err := audio.BuildPaths(cfg.InputPath, lang.Code, cfg.OutputPath)
+	paths, err := audio.BuildPathsForMode(cfg.InputPath, lang.Code, cfg.OutputPath, cfg.Mode)
 	if err != nil {
 		return Result{}, err
 	}
@@ -92,10 +116,16 @@ func (p Pipeline) Run(ctx context.Context, rawConfig config.Config) (Result, err
 
 	runner := executil.Runner{Log: p.log, Tools: cfg.ToolPaths(), Env: cfg.RuntimeEnv()}
 	p.log("")
-	p.log("Dubbing Pipeline")
+	if cfg.Mode == config.ModeSubtitle {
+		p.log("Subtitling Pipeline")
+	} else {
+		p.log("Dubbing Pipeline")
+	}
 	p.log("  Input:    " + paths.Input)
 	p.log("  Language: " + lang.TranslationName)
-	p.log("  Voice:    " + lang.Voice)
+	if cfg.Mode == config.ModeDub {
+		p.log("  Voice:    " + lang.Voice)
+	}
 	p.log("  Output:   " + paths.FinalVideo)
 	p.log("")
 
@@ -103,15 +133,24 @@ func (p Pipeline) Run(ctx context.Context, rawConfig config.Config) (Result, err
 	fail := func(step Step, err error) (Result, error) {
 		p.step(step, StateError)
 		if errors.Is(err, context.Canceled) {
-			return Result{Paths: paths}, err
+			return resultForPaths(paths), err
 		}
-		return Result{Paths: paths}, fmt.Errorf("%s: %w", StepLabels[step], err)
+		return resultForPaths(paths), fmt.Errorf("%s: %w", p.stepLabel(step), err)
 	}
 
 	p.begin(current)
-	pythonExe, err := environment.Setup(ctx, runner, cfg, lang.Voice)
-	if err != nil {
-		return fail(current, err)
+	var pythonExe string
+	if cfg.Mode == config.ModeDub {
+		pythonExe, err = environment.Setup(ctx, runner, cfg, lang.Voice)
+		if err != nil {
+			return fail(current, err)
+		}
+	} else {
+		pythonExe, err = environment.SetupWhisperRuntime(ctx, runner, cfg)
+		if err != nil {
+			return fail(current, err)
+		}
+		p.log("Environment ready.")
 	}
 	p.finish(current)
 
@@ -165,6 +204,21 @@ func (p Pipeline) Run(ctx context.Context, rawConfig config.Config) (Result, err
 	}
 	p.finish(current)
 
+	if cfg.Mode == config.ModeSubtitle {
+		current = StepSynthesize
+		p.begin(current)
+		if err := audio.EmbedSubtitles(ctx, runner, paths.Input, paths.TranslatedSRT, paths.FinalVideo); err != nil {
+			return fail(current, err)
+		}
+		p.finish(current)
+
+		p.log("")
+		p.log("Pipeline complete!")
+		p.log("  Output: " + paths.FinalVideo)
+		p.log("  Subtitles: " + paths.TranslatedSRT)
+		return resultForPaths(paths), nil
+	}
+
 	current = StepSynthesize
 	p.begin(current)
 	runStep, err = shouldRun(cfg.Force, paths.SyncedAudio)
@@ -193,7 +247,11 @@ func (p Pipeline) Run(ctx context.Context, rawConfig config.Config) (Result, err
 	p.log("")
 	p.log("Pipeline complete!")
 	p.log("  Output: " + paths.FinalVideo)
-	return Result{Paths: paths}, nil
+	return resultForPaths(paths), nil
+}
+
+func resultForPaths(paths audio.Paths) Result {
+	return Result{Paths: paths, OutputVideo: paths.FinalVideo, SubtitleSRT: paths.TranslatedSRT}
 }
 
 func shouldRun(force bool, path string) (bool, error) {
@@ -216,7 +274,7 @@ func shouldRun(force bool, path string) (bool, error) {
 func (p Pipeline) begin(step Step) {
 	p.log("")
 	p.log("═══════════════════════════════════════════════════════════════")
-	p.log(fmt.Sprintf("  Step %d/%d — %s", int(step)+1, int(StepCount), StepLabels[step]))
+	p.log(fmt.Sprintf("  Step %d/%d — %s", int(step)+1, len(p.progressLabels()), p.stepLabel(step)))
 	p.log("═══════════════════════════════════════════════════════════════")
 	p.step(step, StateRunning)
 }
@@ -233,4 +291,19 @@ func (p Pipeline) step(step Step, state State) {
 	if p.Observer != nil {
 		p.Observer.OnStep(step, state)
 	}
+}
+
+func (p Pipeline) progressLabels() []string {
+	if len(p.stepLabels) == 0 {
+		return StepLabels[:]
+	}
+	return p.stepLabels
+}
+
+func (p Pipeline) stepLabel(step Step) string {
+	labels := p.progressLabels()
+	if int(step) < 0 || int(step) >= len(labels) {
+		return fmt.Sprintf("Step %d", int(step)+1)
+	}
+	return labels[step]
 }

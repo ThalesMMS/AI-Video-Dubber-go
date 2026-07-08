@@ -50,6 +50,58 @@ func MergeVideoAudio(ctx context.Context, runner executil.Runner, videoPath, aud
 	})
 }
 
+// EmbedSubtitles copies the original video/audio streams and adds an SRT file
+// as an MP4 selectable subtitle track.
+func EmbedSubtitles(ctx context.Context, runner executil.Runner, videoPath, subtitlePath, outputPath string) error {
+	if empty, err := isEmptyTextFile(subtitlePath); err != nil {
+		return err
+	} else if empty {
+		return copyVideoAudio(ctx, runner, videoPath, outputPath)
+	}
+	return atomicMediaOutput(outputPath, func(tempPath string) error {
+		args := []string{
+			"-hide_banner", "-nostdin", "-y",
+			"-i", videoPath,
+			"-i", subtitlePath,
+			"-map", "0:v:0", "-map", "0:a?", "-map", "1:0",
+			"-c:v", "copy",
+			"-c:a", "copy",
+			"-c:s", "mov_text",
+			"-movflags", "+faststart",
+			tempPath,
+		}
+		if err := runner.Run(ctx, "ffmpeg", args, executil.Options{}); err != nil {
+			return fmt.Errorf("embed subtitles: %w", err)
+		}
+		return nil
+	})
+}
+
+func copyVideoAudio(ctx context.Context, runner executil.Runner, videoPath, outputPath string) error {
+	return atomicMediaOutput(outputPath, func(tempPath string) error {
+		args := []string{
+			"-hide_banner", "-nostdin", "-y",
+			"-i", videoPath,
+			"-map", "0:v:0", "-map", "0:a?",
+			"-c", "copy",
+			"-movflags", "+faststart",
+			tempPath,
+		}
+		if err := runner.Run(ctx, "ffmpeg", args, executil.Options{}); err != nil {
+			return fmt.Errorf("copy original video/audio: %w", err)
+		}
+		return nil
+	})
+}
+
+func isEmptyTextFile(path string) (bool, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false, fmt.Errorf("read subtitle file %q: %w", path, err)
+	}
+	return strings.TrimSpace(string(data)) == "", nil
+}
+
 // ProbeDuration returns a media file's duration.
 func ProbeDuration(ctx context.Context, runner executil.Runner, path string) (time.Duration, error) {
 	output, err := runner.Output(ctx, "ffprobe", []string{

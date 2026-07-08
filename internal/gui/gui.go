@@ -33,6 +33,8 @@ import (
 const (
 	maxLogBytes        = 64_000
 	logRefreshInterval = 100 * time.Millisecond
+	guiModeDub         = "Dub"
+	guiModeSubtitle    = "Subtitle"
 )
 
 // Run creates the desktop application and blocks until it exits.
@@ -58,11 +60,13 @@ type ui struct {
 	apiBase   *widget.Entry
 	apiKey    *widget.Entry
 	model     *widget.Entry
+	mode      *widget.RadioGroup
 	language  *widget.Select
 	browse    *widget.Button
 	start     *widget.Button
 	cancel    *widget.Button
 	logEntry  *widget.Entry
+	stepsBox  *fyne.Container
 	steps     []*stepIndicator
 
 	mu         sync.Mutex
@@ -97,6 +101,11 @@ func newUI(application fyne.App, window fyne.Window, projectDir string) *ui {
 	}
 	result.language.SetSelected(selectedLanguage)
 
+	result.mode = widget.NewRadioGroup([]string{guiModeDub, guiModeSubtitle}, func(string) { result.refreshModeControls() })
+	result.mode.Horizontal = true
+	result.mode.Required = true
+	result.mode.SetSelected(guiModeDub)
+
 	result.browse = widget.NewButton("Browse…", result.openFileDialog)
 	result.browse.Importance = widget.HighImportance
 	result.start = widget.NewButton("▶  Start Dubbing", result.startPipeline)
@@ -109,10 +118,6 @@ func newUI(application fyne.App, window fyne.Window, projectDir string) *ui {
 	result.logEntry.Wrapping = fyne.TextWrapWord
 	result.logEntry.TextStyle = fyne.TextStyle{Monospace: true}
 	result.logEntry.Disable()
-	result.steps = make([]*stepIndicator, pipeline.StepCount)
-	for index := pipeline.Step(0); index < pipeline.StepCount; index++ {
-		result.steps[index] = newStepIndicator(int(index)+1, pipeline.StepLabels[index])
-	}
 	return result
 }
 
@@ -129,7 +134,7 @@ func (u *ui) content() fyne.CanvasObject {
 	title := canvas.NewText("AI Video Dubber", colorForeground)
 	title.TextSize = 28
 	title.TextStyle = fyne.TextStyle{Bold: true}
-	subtitle := canvas.NewText("Dub any video into another language, automatically.", colorDim)
+	subtitle := canvas.NewText("Dub or subtitle any video into another language, automatically.", colorDim)
 	subtitle.TextSize = 14
 	header := container.NewBorder(nil, nil, iconBadge, nil, container.NewVBox(layout.NewSpacer(), title, subtitle, layout.NewSpacer()))
 
@@ -143,25 +148,24 @@ func (u *ui) content() fyne.CanvasObject {
 	modelRow := formRow("Model:", u.model, hint)
 	llmCard := card(2, "LLM API settings (for translation)", container.NewVBox(endpointRow, keyRow, modelRow))
 
-	languageCard := card(3, "Choose target language", u.language)
+	modeCard := card(3, "Choose output mode", u.mode)
+	languageCard := card(4, "Choose target language", u.language)
 
-	stepObjects := make([]fyne.CanvasObject, 0, len(u.steps)+1)
-	for _, indicator := range u.steps {
-		stepObjects = append(stepObjects, indicator.root)
-	}
+	u.stepsBox = container.NewVBox()
+	u.rebuildStepIndicators()
 	logBackground := canvas.NewRectangle(colorInput)
 	logBackground.CornerRadius = 10
 	logBackground.StrokeColor = colorBorder
 	logBackground.StrokeWidth = 1
 	logBox := container.NewStack(logBackground, container.NewPadded(u.logEntry))
 	logBox = container.NewGridWrap(fyne.NewSize(680, 200), logBox)
-	stepObjects = append(stepObjects, container.NewPadded(logBox))
-	progressCard := card(4, "Pipeline progress", container.NewVBox(stepObjects...))
+	progressCard := card(5, "Pipeline progress", container.NewVBox(u.stepsBox, container.NewPadded(logBox)))
 
 	body := container.NewVBox(
 		header,
 		fileCard,
 		llmCard,
+		modeCard,
 		languageCard,
 		progressCard,
 	)
@@ -258,11 +262,12 @@ func (u *ui) startPipeline() {
 		dialog.ShowError(err, u.window)
 		return
 	}
+	runMode := u.selectedMode()
 
 	u.application.Preferences().SetString("api_base", apiBase)
 	u.application.Preferences().SetString("model", strings.TrimSpace(u.model.Text))
 	u.application.Preferences().SetString("language", lang.DisplayName)
-	u.openLogFile(inputPath)
+	u.openLogFile(inputPath, runMode)
 	u.resetRun()
 	u.setRunning(true)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -271,6 +276,7 @@ func (u *ui) startPipeline() {
 	u.mu.Unlock()
 
 	cfg := config.Defaults()
+	cfg.Mode = runMode
 	cfg.InputPath = inputPath
 	cfg.LanguageCode = lang.Code
 	cfg.APIBase = apiBase
@@ -293,7 +299,11 @@ func (u *ui) startPipeline() {
 		switch {
 		case runErr == nil:
 			u.OnLog("")
-			u.OnLog("✓  Done! Your dubbed video is ready.")
+			if cfg.Mode == config.ModeSubtitle {
+				u.OnLog("✓  Done! Your subtitled video is ready.")
+			} else {
+				u.OnLog("✓  Done! Your dubbed video is ready.")
+			}
 		case errors.Is(runErr, context.Canceled):
 			u.OnLog("Pipeline cancelled by user.")
 		default:
@@ -303,7 +313,11 @@ func (u *ui) startPipeline() {
 		fyne.Do(func() {
 			u.setRunning(false)
 			if runErr == nil {
-				dialog.ShowInformation("Success", "Your dubbed video has been created:\n\n"+result.Paths.FinalVideo, u.window)
+				if cfg.Mode == config.ModeSubtitle {
+					dialog.ShowInformation("Success", "Your subtitled video has been created:\n\n"+result.OutputVideo+"\n\nSubtitle file:\n"+result.SubtitleSRT, u.window)
+				} else {
+					dialog.ShowInformation("Success", "Your dubbed video has been created:\n\n"+result.OutputVideo, u.window)
+				}
 			} else if !errors.Is(runErr, context.Canceled) {
 				dialog.ShowError(runErr, u.window)
 			}
@@ -333,12 +347,15 @@ func (u *ui) setRunning(running bool) {
 		u.start.Disable()
 		u.browse.Disable()
 		u.language.Disable()
+		u.mode.Disable()
 		u.cancel.Enable()
 	} else {
 		u.start.Enable()
 		u.browse.Enable()
 		u.language.Enable()
+		u.mode.Enable()
 		u.cancel.Disable()
+		u.refreshModeControls()
 	}
 }
 
@@ -349,12 +366,13 @@ func (u *ui) resetRun() {
 	u.logRefreshDirty = false
 	u.mu.Unlock()
 	u.logEntry.SetText("")
+	u.rebuildStepIndicators()
 	for _, indicator := range u.steps {
 		indicator.setState(pipeline.StatePending)
 	}
 }
 
-func (u *ui) openLogFile(inputPath string) {
+func (u *ui) openLogFile(inputPath string, mode config.Mode) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	if u.logFile != nil {
@@ -369,7 +387,7 @@ func (u *ui) openLogFile(inputPath string) {
 	base := filepath.Base(inputPath)
 	base = strings.TrimSuffix(base, filepath.Ext(base))
 	if base == "" {
-		base = "dubbing"
+		base = string(mode)
 	}
 	logPath := filepath.Join(logDir, base+"-"+timestamp+".log")
 	file, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
@@ -379,6 +397,7 @@ func (u *ui) openLogFile(inputPath string) {
 	u.logFile = file
 	u.logFile.WriteString("[" + time.Now().Format("15:04:05") + "] Log started: " + logPath + "\n")
 	u.logFile.WriteString("[" + time.Now().Format("15:04:05") + "] Input: " + inputPath + "\n")
+	u.logFile.WriteString("[" + time.Now().Format("15:04:05") + "] Mode: " + string(mode) + "\n")
 }
 
 func (u *ui) closeLogFile() {
@@ -464,10 +483,45 @@ func cursorEnd(text string) (row, column int) {
 
 // OnStep implements pipeline.Observer.
 func (u *ui) OnStep(step pipeline.Step, state pipeline.State) {
-	if step < 0 || step >= pipeline.StepCount {
+	if step < 0 || int(step) >= len(u.steps) {
 		return
 	}
 	fyne.Do(func() { u.steps[step].setState(state) })
+}
+
+func (u *ui) selectedMode() config.Mode {
+	if u.mode != nil && u.mode.Selected == guiModeSubtitle {
+		return config.ModeSubtitle
+	}
+	return config.ModeDub
+}
+
+func (u *ui) refreshModeControls() {
+	if u.start != nil {
+		if u.selectedMode() == config.ModeSubtitle {
+			u.start.SetText("▶  Start Subtitling")
+		} else {
+			u.start.SetText("▶  Start Dubbing")
+		}
+	}
+	if u.stepsBox != nil && !u.running {
+		u.rebuildStepIndicators()
+	}
+}
+
+func (u *ui) rebuildStepIndicators() {
+	if u.stepsBox == nil {
+		return
+	}
+	labels := pipeline.StepLabelsForMode(u.selectedMode())
+	u.steps = make([]*stepIndicator, 0, len(labels))
+	u.stepsBox.Objects = nil
+	for index, label := range labels {
+		indicator := newStepIndicator(index+1, label)
+		u.steps = append(u.steps, indicator)
+		u.stepsBox.Add(indicator.root)
+	}
+	u.stepsBox.Refresh()
 }
 
 func contains(values []string, value string) bool {

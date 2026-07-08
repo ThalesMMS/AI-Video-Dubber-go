@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+
+	"github.com/ai-video-dubber/ai-video-dubber-go/internal/config"
 )
 
 // Paths contains the deterministic intermediate/output files used by a run.
@@ -22,6 +24,11 @@ type Paths struct {
 
 // BuildPaths creates paths next to the input video, matching the Python project.
 func BuildPaths(inputPath, languageCode, explicitOutput string) (Paths, error) {
+	return BuildPathsForMode(inputPath, languageCode, explicitOutput, config.ModeDub)
+}
+
+// BuildPathsForMode creates deterministic paths for the selected complete run mode.
+func BuildPathsForMode(inputPath, languageCode, explicitOutput string, mode config.Mode) (Paths, error) {
 	absolute, err := filepath.Abs(inputPath)
 	if err != nil {
 		return Paths{}, fmt.Errorf("resolve input path: %w", err)
@@ -31,9 +38,17 @@ func BuildPaths(inputPath, languageCode, explicitOutput string) (Paths, error) {
 		return Paths{}, fmt.Errorf("input file has no extension: %s", absolute)
 	}
 	base := strings.TrimSuffix(absolute, extension)
+	finalSuffix := "synced"
+	parsedMode, err := config.ParseMode(string(mode))
+	if err != nil {
+		return Paths{}, err
+	}
+	if parsedMode == config.ModeSubtitle {
+		finalSuffix = "subtitled"
+	}
 	finalVideo := strings.TrimSpace(explicitOutput)
 	if finalVideo == "" {
-		finalVideo = fmt.Sprintf("%s.%s.synced.mp4", base, languageCode)
+		finalVideo = fmt.Sprintf("%s.%s.%s.mp4", base, languageCode, finalSuffix)
 	} else if !filepath.IsAbs(finalVideo) {
 		finalVideo, err = filepath.Abs(finalVideo)
 		if err != nil {

@@ -13,7 +13,7 @@ pipeline.Pipeline
     ├── audio        → FFmpeg, ffprobe, and PCM/WAV handling
     ├── transcription→ local Whisper
     ├── translation  → OpenAI-compatible API
-    └── tts          → Piper, grouping, and timing adjustment
+    └── tts          → Piper, grouping, and timing adjustment for dub mode
 ```
 
 ## Main Decisions
@@ -26,9 +26,13 @@ Processes, files, networking, cancellation, and interface state are controlled i
 
 `pipeline.Observer` receives logs and state changes. The CLI writes to the terminal; the GUI schedules updates on the Fyne thread. The core remains decoupled from presentation.
 
+### Complete Run Modes
+
+`config.ModeDub` keeps the original six-stage dubbing flow: setup, audio extraction, transcription, translation, Piper synthesis, and final video/audio merge. `config.ModeSubtitle` shares the setup/extract/transcribe/translate stages, skips Piper voice preparation and TTS, and uses FFmpeg to copy the original video/audio streams into an MP4 with the translated SRT as a selectable `mov_text` subtitle track.
+
 ### Deterministic Artifacts
 
-`audio.BuildPaths` centralizes intermediate file names. This keeps compatibility with the reference project and lets the CLI resume stages.
+`audio.BuildPathsForMode` centralizes intermediate file names. Dub mode keeps `video.<lang>.synced.mp4`; subtitle mode creates `video.<lang>.srt` plus `video.<lang>.subtitled.mp4`. This keeps compatibility with the reference project and lets the CLI resume shared stages.
 
 ### Tolerant Translation
 

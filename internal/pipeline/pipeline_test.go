@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ai-video-dubber/ai-video-dubber-go/internal/config"
 )
 
 type recordingObserver struct {
@@ -50,5 +52,37 @@ func TestBeginUsesOneBasedSixStepProgress(t *testing.T) {
 	}
 	if !strings.Contains(joined, "Step 6/6 — Merge final video") {
 		t.Fatalf("merge progress line not found:\n%s", joined)
+	}
+}
+
+func TestStepLabelsForMode(t *testing.T) {
+	dub := StepLabelsForMode(config.ModeDub)
+	if len(dub) != 6 {
+		t.Fatalf("dub labels len = %d, want 6", len(dub))
+	}
+	if dub[4] != "Generate dubbed audio" {
+		t.Fatalf("dub fifth label = %q", dub[4])
+	}
+
+	subtitle := StepLabelsForMode(config.ModeSubtitle)
+	if len(subtitle) != 5 {
+		t.Fatalf("subtitle labels len = %d, want 5", len(subtitle))
+	}
+	if subtitle[4] != "Create subtitled video" {
+		t.Fatalf("subtitle fifth label = %q", subtitle[4])
+	}
+	if strings.Join(subtitle, "\n") == strings.Join(dub, "\n") || strings.Contains(strings.Join(subtitle, "\n"), "Generate dubbed audio") {
+		t.Fatalf("subtitle labels still include dubbing-only steps: %#v", subtitle)
+	}
+}
+
+func TestBeginUsesOneBasedFiveStepSubtitleProgress(t *testing.T) {
+	observer := &recordingObserver{}
+	p := Pipeline{Observer: observer, stepLabels: StepLabelsForMode(config.ModeSubtitle)}
+	p.begin(StepSynthesize)
+
+	joined := strings.Join(observer.lines, "\n")
+	if !strings.Contains(joined, "Step 5/5 — Create subtitled video") {
+		t.Fatalf("subtitle progress line not found:\n%s", joined)
 	}
 }

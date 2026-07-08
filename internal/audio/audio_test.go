@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ai-video-dubber/ai-video-dubber-go/internal/config"
 	"github.com/ai-video-dubber/ai-video-dubber-go/internal/executil"
 )
 
@@ -27,6 +28,39 @@ func TestBuildPaths(t *testing.T) {
 	}
 	if _, err := BuildPaths(filepath.Join(dir, "no-extension"), "pt-BR", ""); err == nil {
 		t.Fatal("BuildPaths() accepted an extensionless input")
+	}
+}
+
+func TestBuildPathsForMode(t *testing.T) {
+	dir := t.TempDir()
+	input := filepath.Join(dir, "video.test.mp4")
+
+	dubPaths, err := BuildPathsForMode(input, "pt-BR", "", config.ModeDub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(dubPaths.FinalVideo, "video.test.pt-BR.synced.mp4") {
+		t.Fatalf("dub FinalVideo = %q", dubPaths.FinalVideo)
+	}
+
+	subtitlePaths, err := BuildPathsForMode(input, "pt-BR", "", config.ModeSubtitle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(subtitlePaths.FinalVideo, "video.test.pt-BR.subtitled.mp4") {
+		t.Fatalf("subtitle FinalVideo = %q", subtitlePaths.FinalVideo)
+	}
+	if !strings.HasSuffix(subtitlePaths.TranslatedSRT, "video.test.pt-BR.srt") {
+		t.Fatalf("subtitle TranslatedSRT = %q", subtitlePaths.TranslatedSRT)
+	}
+
+	explicit := filepath.Join(dir, "custom-output.mp4")
+	explicitPaths, err := BuildPathsForMode(input, "pt-BR", explicit, config.ModeSubtitle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if explicitPaths.FinalVideo != explicit {
+		t.Fatalf("explicit FinalVideo = %q, want %q", explicitPaths.FinalVideo, explicit)
 	}
 }
 
@@ -126,4 +160,120 @@ func TestProbeDurationUsesRunnerToolPath(t *testing.T) {
 	if duration != 12500*time.Millisecond {
 		t.Fatalf("duration = %s", duration)
 	}
+}
+
+func TestEmbedSubtitlesUsesFFmpegMovTextAndCopiesOriginalStreams(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script test")
+	}
+	dir := t.TempDir()
+	ffmpeg := filepath.Join(dir, "ffmpeg")
+	argsPath := filepath.Join(dir, "args.txt")
+	if err := os.WriteFile(ffmpeg, []byte(`#!/bin/sh
+printf '%s\n' "$@" > "$CAPTURE_ARGS"
+last=""
+for arg do
+  last="$arg"
+done
+printf media > "$last"
+`), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	video := filepath.Join(dir, "source.mp4")
+	subtitle := filepath.Join(dir, "source.pt-BR.srt")
+	output := filepath.Join(dir, "source.pt-BR.subtitled.mp4")
+	if err := os.WriteFile(video, []byte("video"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(subtitle, []byte("1\n00:00:00,000 --> 00:00:01,000\nOlá\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runner := executil.Runner{
+		Tools: map[string]string{"ffmpeg": ffmpeg},
+		Env:   []string{"CAPTURE_ARGS=" + argsPath},
+	}
+
+	if err := EmbedSubtitles(context.Background(), runner, video, subtitle, output); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "media" {
+		t.Fatalf("output content = %q", data)
+	}
+	argsData, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := strings.Split(strings.TrimSpace(string(argsData)), "\n")
+	for _, want := range []string{
+		"-i", video, subtitle,
+		"-map", "0:v:0", "0:a?", "1:0",
+		"-c:v", "copy", "-c:a", "copy", "-c:s", "mov_text",
+	} {
+		if !hasArg(args, want) {
+			t.Fatalf("ffmpeg args missing %q:\n%s", want, string(argsData))
+		}
+	}
+}
+
+func TestEmbedSubtitlesWithEmptyFileCopiesOriginalStreamsOnly(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script test")
+	}
+	dir := t.TempDir()
+	ffmpeg := filepath.Join(dir, "ffmpeg")
+	argsPath := filepath.Join(dir, "args.txt")
+	if err := os.WriteFile(ffmpeg, []byte(`#!/bin/sh
+printf '%s\n' "$@" > "$CAPTURE_ARGS"
+last=""
+for arg do
+  last="$arg"
+done
+printf media > "$last"
+`), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	video := filepath.Join(dir, "source.mp4")
+	subtitle := filepath.Join(dir, "empty.srt")
+	output := filepath.Join(dir, "source.pt-BR.subtitled.mp4")
+	if err := os.WriteFile(video, []byte("video"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(subtitle, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runner := executil.Runner{
+		Tools: map[string]string{"ffmpeg": ffmpeg},
+		Env:   []string{"CAPTURE_ARGS=" + argsPath},
+	}
+
+	if err := EmbedSubtitles(context.Background(), runner, video, subtitle, output); err != nil {
+		t.Fatal(err)
+	}
+	argsData, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := strings.Split(strings.TrimSpace(string(argsData)), "\n")
+	if hasArg(args, subtitle) || hasArg(args, "mov_text") || hasArg(args, "1:0") {
+		t.Fatalf("empty subtitle ffmpeg args unexpectedly include subtitle input:\n%s", string(argsData))
+	}
+	for _, want := range []string{"-i", video, "-map", "0:v:0", "0:a?", "-c", "copy"} {
+		if !hasArg(args, want) {
+			t.Fatalf("ffmpeg args missing %q:\n%s", want, string(argsData))
+		}
+	}
+}
+
+func hasArg(args []string, want string) bool {
+	for _, arg := range args {
+		if arg == want {
+			return true
+		}
+	}
+	return false
 }
