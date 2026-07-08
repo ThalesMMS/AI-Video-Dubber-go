@@ -34,6 +34,28 @@ type Client struct {
 	Log            LogFunc
 }
 
+// Preflight checks that the translation API is reachable before local work starts.
+// It returns the configured model, or the first listed model when auto-detection is needed.
+func (c *Client) Preflight(ctx context.Context) (string, error) {
+	if err := validateAPIBase(c.APIBase); err != nil {
+		return "", err
+	}
+	models, err := c.listModels(ctx)
+	if err != nil {
+		return "", fmt.Errorf("check translation API connectivity: %w", err)
+	}
+	if len(models) == 0 {
+		return "", fmt.Errorf("check translation API connectivity: the API returned no models")
+	}
+	model := strings.TrimSpace(c.Model)
+	if model == "" {
+		model = models[0]
+		c.logf("Auto-detected model: %s", model)
+	}
+	c.logf("Translation API reachable: %s", strings.TrimRight(c.APIBase, "/"))
+	return model, nil
+}
+
 // TranslateFile translates the text of each SRT cue while preserving timing.
 func (c *Client) TranslateFile(ctx context.Context, inputPath, outputPath, targetLanguage string, batchSize int) error {
 	if err := validateAPIBase(c.APIBase); err != nil {
@@ -95,19 +117,31 @@ func (c *Client) resolveModel(ctx context.Context) (string, error) {
 	if model := strings.TrimSpace(c.Model); model != "" {
 		return model, nil
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, APIURL(c.APIBase, "models"), nil)
+	models, err := c.listModels(ctx)
 	if err != nil {
 		return "", err
+	}
+	if len(models) == 0 {
+		return "", fmt.Errorf("the API returned no models")
+	}
+	c.logf("Auto-detected model: %s", models[0])
+	return models[0], nil
+}
+
+func (c *Client) listModels(ctx context.Context) ([]string, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, APIURL(c.APIBase, "models"), nil)
+	if err != nil {
+		return nil, err
 	}
 	c.setHeaders(request)
 	client := c.client(10 * time.Second)
 	response, err := client.Do(request)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return "", responseError(response)
+		return nil, responseError(response)
 	}
 	var payload struct {
 		Data []struct {
@@ -115,13 +149,15 @@ func (c *Client) resolveModel(ctx context.Context) (string, error) {
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(io.LimitReader(response.Body, 4<<20)).Decode(&payload); err != nil {
-		return "", err
+		return nil, err
 	}
-	if len(payload.Data) == 0 || strings.TrimSpace(payload.Data[0].ID) == "" {
-		return "", fmt.Errorf("the API returned no models")
+	models := make([]string, 0, len(payload.Data))
+	for _, item := range payload.Data {
+		if model := strings.TrimSpace(item.ID); model != "" {
+			models = append(models, model)
+		}
 	}
-	c.logf("Auto-detected model: %s", payload.Data[0].ID)
-	return payload.Data[0].ID, nil
+	return models, nil
 }
 
 func (c *Client) translateBatch(ctx context.Context, model, targetLanguage string, texts []string) ([]string, error) {

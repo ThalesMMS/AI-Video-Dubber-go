@@ -153,6 +153,20 @@ func (p Pipeline) Run(ctx context.Context, rawConfig config.Config) (Result, err
 		}
 		return resultForPaths(paths), fmt.Errorf("%s: %w", p.stepLabel(step), err)
 	}
+	translateWillRun, err := shouldRun(cfg.Force, paths.TranslatedSRT)
+	if err != nil {
+		return fail(StepTranslate, err)
+	}
+	translationModel := cfg.Model
+	if translateWillRun {
+		p.log("Checking translation API connectivity...")
+		client := translation.Client{APIBase: cfg.APIBase, APIKey: cfg.APIKey, Model: translationModel, RequestTimeout: cfg.TranslationTimeout, Log: p.log}
+		model, err := client.Preflight(ctx)
+		if err != nil {
+			return fail(StepTranslate, fmt.Errorf("translation API preflight: %w", err))
+		}
+		translationModel = model
+	}
 
 	p.begin(current)
 	var pythonExe string
@@ -206,12 +220,8 @@ func (p Pipeline) Run(ctx context.Context, rawConfig config.Config) (Result, err
 
 	current = StepTranslate
 	p.begin(current)
-	runStep, err = shouldRun(cfg.Force, paths.TranslatedSRT)
-	if err != nil {
-		return fail(current, err)
-	}
-	if runStep {
-		client := translation.Client{APIBase: cfg.APIBase, APIKey: cfg.APIKey, Model: cfg.Model, RequestTimeout: cfg.TranslationTimeout, Log: p.log}
+	if translateWillRun {
+		client := translation.Client{APIBase: cfg.APIBase, APIKey: cfg.APIKey, Model: translationModel, RequestTimeout: cfg.TranslationTimeout, Log: p.log}
 		if err := client.TranslateFile(ctx, paths.TranscriptSRT, paths.TranslatedSRT, lang.TranslationName, cfg.TranslationBatchSize); err != nil {
 			return fail(current, err)
 		}

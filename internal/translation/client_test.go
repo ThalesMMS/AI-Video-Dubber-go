@@ -134,6 +134,56 @@ func TestTranslateFileAgainstOpenAICompatibleServer(t *testing.T) {
 	}
 }
 
+func TestPreflightChecksModelsEndpoint(t *testing.T) {
+	var modelCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/v1/models" {
+			http.NotFound(writer, request)
+			return
+		}
+		modelCalls.Add(1)
+		if request.Header.Get("Authorization") != "Bearer secret" {
+			http.Error(writer, "missing auth", http.StatusUnauthorized)
+			return
+		}
+		_ = json.NewEncoder(writer).Encode(map[string]any{"data": []map[string]string{{"id": "test-model"}}})
+	}))
+	defer server.Close()
+
+	var logs []string
+	client := Client{APIBase: server.URL, APIKey: "secret", HTTPClient: server.Client(), Log: func(line string) { logs = append(logs, line) }}
+	model, err := client.Preflight(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if model != "test-model" {
+		t.Fatalf("model = %q, want test-model", model)
+	}
+	if modelCalls.Load() != 1 {
+		t.Fatalf("model calls = %d, want 1", modelCalls.Load())
+	}
+	if joined := strings.Join(logs, "\n"); !strings.Contains(joined, "Translation API reachable") {
+		t.Fatalf("preflight logs missing reachability:\n%s", joined)
+	}
+}
+
+func TestPreflightReportsAPIStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		http.Error(writer, "bad key", http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	client := Client{APIBase: server.URL, APIKey: "wrong", HTTPClient: server.Client()}
+	_, err := client.Preflight(context.Background())
+	if err == nil {
+		t.Fatal("Preflight unexpectedly succeeded")
+	}
+	if text := err.Error(); !strings.Contains(text, "check translation API connectivity") || !strings.Contains(text, "HTTP 401") {
+		t.Fatalf("preflight error = %q, want connectivity and HTTP status", text)
+	}
+}
+
 func TestTranslateFileWritesEmptyOutputForEmptySRT(t *testing.T) {
 	dir := t.TempDir()
 	input := filepath.Join(dir, "empty.srt")

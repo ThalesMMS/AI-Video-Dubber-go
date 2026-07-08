@@ -1,6 +1,10 @@
 package pipeline
 
 import (
+	"context"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -92,5 +96,45 @@ func TestBeginUsesOneBasedFiveStepSubtitleProgress(t *testing.T) {
 	joined := strings.Join(observer.lines, "\n")
 	if !strings.Contains(joined, "Step 5/5 — Create subtitled video") {
 		t.Fatalf("subtitle progress line not found:\n%s", joined)
+	}
+}
+
+func TestRunPreflightsTranslationAPIBeforeLocalSetup(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/v1/models" {
+			http.NotFound(writer, request)
+			return
+		}
+		http.Error(writer, "bad key", http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	input := filepath.Join(dir, "video.mp4")
+	if err := os.WriteFile(input, []byte("placeholder video"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	observer := &recordingObserver{}
+	cfg := config.Config{
+		Mode:         config.ModeDub,
+		InputPath:    input,
+		APIBase:      server.URL,
+		APIKey:       "wrong",
+		LanguageCode: "pt-BR",
+		Force:        true,
+	}
+
+	_, err := (Pipeline{ProjectDir: dir, Observer: observer}).Run(context.Background(), cfg)
+	if err == nil {
+		t.Fatal("Run unexpectedly succeeded")
+	}
+	if text := err.Error(); !strings.Contains(text, "Translate subtitles: translation API preflight") || !strings.Contains(text, "HTTP 401") {
+		t.Fatalf("error = %q, want preflight HTTP failure", text)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, ".venv")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf(".venv stat error = %v, want not exist", statErr)
+	}
+	if joined := strings.Join(observer.lines, "\n"); !strings.Contains(joined, "Checking translation API connectivity") {
+		t.Fatalf("preflight log missing:\n%s", joined)
 	}
 }
