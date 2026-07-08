@@ -134,6 +134,54 @@ func TestTranslateFileAgainstOpenAICompatibleServer(t *testing.T) {
 	}
 }
 
+func TestTranslateFileRetriesTransientTranslationFailures(t *testing.T) {
+	var completionCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/v1/models":
+			_ = json.NewEncoder(writer).Encode(map[string]any{"data": []map[string]string{{"id": "test-model"}}})
+		case "/v1/chat/completions":
+			call := completionCalls.Add(1)
+			switch call {
+			case 1:
+				writer.Header().Set("Retry-After", "0")
+				http.Error(writer, "temporary overload", http.StatusServiceUnavailable)
+			case 2:
+				writer.Header().Set("Retry-After", "0")
+				http.Error(writer, "rate limited", http.StatusTooManyRequests)
+			default:
+				_ = json.NewEncoder(writer).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": "[0] Um"}}}})
+			}
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	input := filepath.Join(dir, "input.srt")
+	output := filepath.Join(dir, "output.srt")
+	content := "1\n00:00:00,000 --> 00:00:01,000\nOne\n"
+	if err := os.WriteFile(input, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	client := Client{APIBase: server.URL, HTTPClient: server.Client()}
+	if err := client.TranslateFile(context.Background(), input, output, "Brazilian Portuguese (pt-BR)", 10); err != nil {
+		t.Fatal(err)
+	}
+	if completionCalls.Load() != 3 {
+		t.Fatalf("completion calls = %d, want 3", completionCalls.Load())
+	}
+	cues, err := srt.ReadFile(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cues) != 1 || cues[0].Text != "Um" {
+		t.Fatalf("translated cues = %#v", cues)
+	}
+}
+
 func TestPreflightChecksModelsEndpoint(t *testing.T) {
 	var modelCalls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -169,7 +217,9 @@ func TestPreflightChecksModelsEndpoint(t *testing.T) {
 }
 
 func TestPreflightReportsAPIStatus(t *testing.T) {
+	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		calls.Add(1)
 		http.Error(writer, "bad key", http.StatusUnauthorized)
 	}))
 	defer server.Close()
@@ -181,6 +231,9 @@ func TestPreflightReportsAPIStatus(t *testing.T) {
 	}
 	if text := err.Error(); !strings.Contains(text, "check translation API connectivity") || !strings.Contains(text, "HTTP 401") {
 		t.Fatalf("preflight error = %q, want connectivity and HTTP status", text)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("preflight calls = %d, want fail-fast without retry", calls.Load())
 	}
 }
 

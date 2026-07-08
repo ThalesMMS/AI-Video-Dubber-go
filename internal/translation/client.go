@@ -21,6 +21,12 @@ import (
 
 var taggedLine = regexp.MustCompile(`^\[(\d+)]\s*(.*)$`)
 
+const (
+	defaultHTTPMaxRetries   = 2
+	defaultHTTPRetryBackoff = 500 * time.Millisecond
+	maxHTTPRetryBackoff     = 10 * time.Second
+)
+
 // LogFunc receives progress and warning messages.
 type LogFunc func(string)
 
@@ -129,13 +135,7 @@ func (c *Client) resolveModel(ctx context.Context) (string, error) {
 }
 
 func (c *Client) listModels(ctx context.Context) ([]string, error) {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, APIURL(c.APIBase, "models"), nil)
-	if err != nil {
-		return nil, err
-	}
-	c.setHeaders(request)
-	client := c.client(10 * time.Second)
-	response, err := client.Do(request)
+	response, err := c.doAPI(ctx, http.MethodGet, "models", nil, 10*time.Second, "")
 	if err != nil {
 		return nil, err
 	}
@@ -187,13 +187,7 @@ func (c *Client) translateBatch(ctx context.Context, model, targetLanguage strin
 	if err != nil {
 		return nil, err
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, APIURL(c.APIBase, "chat/completions"), bytes.NewReader(encoded))
-	if err != nil {
-		return nil, err
-	}
-	c.setHeaders(request)
-	request.Header.Set("Content-Type", "application/json")
-	response, err := c.client(120 * time.Second).Do(request)
+	response, err := c.doAPI(ctx, http.MethodPost, "chat/completions", encoded, 120*time.Second, "application/json")
 	if err != nil {
 		return nil, err
 	}
@@ -389,6 +383,120 @@ func (c *Client) client(timeout time.Duration) *http.Client {
 		return &clone
 	}
 	return &http.Client{Timeout: timeout}
+}
+
+func (c *Client) doAPI(ctx context.Context, method, route string, body []byte, timeout time.Duration, contentType string) (*http.Response, error) {
+	client := c.client(timeout)
+	url := APIURL(c.APIBase, route)
+	maxAttempts := defaultHTTPMaxRetries + 1
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		var reader io.Reader
+		if body != nil {
+			reader = bytes.NewReader(body)
+		}
+		request, err := http.NewRequestWithContext(ctx, method, url, reader)
+		if err != nil {
+			return nil, err
+		}
+		c.setHeaders(request)
+		if contentType != "" {
+			request.Header.Set("Content-Type", contentType)
+		}
+
+		response, err := client.Do(request)
+		if err != nil {
+			if ctx.Err() != nil || attempt == maxAttempts-1 {
+				return nil, err
+			}
+			delay := retryDelay(nil, attempt)
+			c.logf("Transient translation API error: %v; retrying in %s (%d/%d).", err, delay.Round(time.Millisecond), attempt+2, maxAttempts)
+			if err := sleepContext(ctx, delay); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		if response.StatusCode >= 200 && response.StatusCode < 300 {
+			return response, nil
+		}
+		if !retryableHTTPStatus(response.StatusCode) || attempt == maxAttempts-1 {
+			return response, nil
+		}
+
+		delay := retryDelay(response, attempt)
+		status := response.Status
+		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 64<<10))
+		response.Body.Close()
+		c.logf("Transient translation API response %s; retrying in %s (%d/%d).", status, delay.Round(time.Millisecond), attempt+2, maxAttempts)
+		if err := sleepContext(ctx, delay); err != nil {
+			return nil, err
+		}
+	}
+	return nil, fmt.Errorf("translation API retry loop exhausted")
+}
+
+func retryableHTTPStatus(status int) bool {
+	return status == http.StatusTooManyRequests || (status >= 500 && status <= 599)
+}
+
+func retryDelay(response *http.Response, attempt int) time.Duration {
+	if response != nil {
+		if delay, ok := parseRetryAfter(response.Header.Get("Retry-After"), time.Now()); ok {
+			return capRetryDelay(delay)
+		}
+	}
+	delay := defaultHTTPRetryBackoff
+	for i := 0; i < attempt; i++ {
+		delay *= 2
+	}
+	return capRetryDelay(delay)
+}
+
+func capRetryDelay(delay time.Duration) time.Duration {
+	if delay > maxHTTPRetryBackoff {
+		return maxHTTPRetryBackoff
+	}
+	return delay
+}
+
+func parseRetryAfter(value string, now time.Time) (time.Duration, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0, false
+	}
+	if seconds, err := strconv.Atoi(value); err == nil {
+		if seconds <= 0 {
+			return 0, true
+		}
+		return time.Duration(seconds) * time.Second, true
+	}
+	when, err := http.ParseTime(value)
+	if err != nil {
+		return 0, false
+	}
+	delay := when.Sub(now)
+	if delay < 0 {
+		delay = 0
+	}
+	return delay, true
+}
+
+func sleepContext(ctx context.Context, delay time.Duration) error {
+	if delay <= 0 {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+			return nil
+		}
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func (c *Client) logf(format string, args ...any) {
