@@ -83,22 +83,30 @@ func setupRuntime(ctx context.Context, runner executil.Runner, cfg config.Config
 		return "", fmt.Errorf("virtual environment directory is required when Python is not bundled")
 	}
 	pythonExe := config.VenvPython(cfg.VenvDir)
+	existingVenv := true
 	if _, err := os.Stat(pythonExe); err != nil {
 		if !os.IsNotExist(err) {
 			return "", fmt.Errorf("inspect virtual environment: %w", err)
 		}
-		if runner.Log != nil {
-			runner.Log("Creating Python virtual environment at " + cfg.VenvDir + "...")
-		}
-		if err := os.MkdirAll(filepath.Dir(cfg.VenvDir), 0o755); err != nil {
-			return "", fmt.Errorf("create virtual environment parent directory: %w", err)
-		}
-		if err := runner.Run(ctx, cfg.PythonBin, []string{"-m", "venv", cfg.VenvDir}, executil.Options{}); err != nil {
-			return "", fmt.Errorf("create Python virtual environment: %w", err)
+		existingVenv = false
+		if err := createVirtualEnv(ctx, runner, cfg); err != nil {
+			return "", err
 		}
 	}
 
 	if err := deps.Verify(ctx, runner, pythonExe); err != nil {
+		if existingVenv {
+			if runner.Log != nil {
+				runner.Log("Existing Python virtual environment failed validation; rebuilding it once...")
+			}
+			if err := os.RemoveAll(cfg.VenvDir); err != nil {
+				return "", fmt.Errorf("remove broken virtual environment: %w", err)
+			}
+			if err := createVirtualEnv(ctx, runner, cfg); err != nil {
+				return "", err
+			}
+			err = deps.Verify(ctx, runner, pythonExe)
+		}
 		if runner.Log != nil {
 			runner.Log("Installing " + deps.Name + " dependencies (first run may take several minutes)...")
 		}
@@ -113,6 +121,19 @@ func setupRuntime(ctx context.Context, runner executil.Runner, cfg config.Config
 	}
 
 	return pythonExe, nil
+}
+
+func createVirtualEnv(ctx context.Context, runner executil.Runner, cfg config.Config) error {
+	if runner.Log != nil {
+		runner.Log("Creating Python virtual environment at " + cfg.VenvDir + "...")
+	}
+	if err := os.MkdirAll(filepath.Dir(cfg.VenvDir), 0o755); err != nil {
+		return fmt.Errorf("create virtual environment parent directory: %w", err)
+	}
+	if err := runner.Run(ctx, cfg.PythonBin, []string{"-m", "venv", cfg.VenvDir}, executil.Options{}); err != nil {
+		return fmt.Errorf("create Python virtual environment: %w", err)
+	}
+	return nil
 }
 
 func pipInstallArgs(args ...string) []string {

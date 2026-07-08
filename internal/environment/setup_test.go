@@ -197,6 +197,100 @@ func TestSetupRuntimeMissingExecutableIncludesInstallHint(t *testing.T) {
 	}
 }
 
+func TestSetupRuntimeRebuildsBrokenExistingVenvOnce(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script test")
+	}
+	dir := t.TempDir()
+	project := filepath.Join(dir, "project")
+	venvDir := filepath.Join(project, ".venv")
+	python := filepath.Join(dir, "python3")
+	ffmpeg := filepath.Join(dir, "ffmpeg")
+	ffprobe := filepath.Join(dir, "ffprobe")
+	events := filepath.Join(dir, "events.log")
+
+	writeExecutable(t, python, `#!/bin/sh
+if [ "$1" = "-c" ] && echo "$2" | grep -q "version_info"; then
+  printf '3.12\n'
+  exit 0
+fi
+if [ "$1" = "-m" ] && [ "$2" = "venv" ]; then
+  printf 'create-venv\n' >> "$CAPTURE_EVENTS"
+  mkdir -p "$3/bin"
+  cat > "$3/bin/python" <<'PY'
+#!/bin/sh
+if [ "$1" = "-c" ] && echo "$2" | grep -q "import whisper, piper"; then
+  printf 'new-verify\n' >> "$CAPTURE_EVENTS"
+  exit 1
+fi
+if [ "$1" = "-m" ] && [ "$2" = "pip" ]; then
+  printf 'new-pip %s\n' "$*" >> "$CAPTURE_EVENTS"
+  exit 0
+fi
+printf 'unexpected new venv python invocation: %s\n' "$*" >&2
+exit 9
+PY
+  chmod 755 "$3/bin/python"
+  exit 0
+fi
+printf 'unexpected python invocation: %s\n' "$*" >&2
+exit 9
+`)
+	brokenPython := config.VenvPython(venvDir)
+	writeExecutable(t, brokenPython, `#!/bin/sh
+if [ "$1" = "-c" ] && echo "$2" | grep -q "import whisper, piper"; then
+  printf 'broken-verify\n' >> "$CAPTURE_EVENTS"
+  exit 1
+fi
+if [ "$1" = "-m" ] && [ "$2" = "pip" ]; then
+  printf 'broken-pip\n' >> "$CAPTURE_EVENTS"
+  exit 9
+fi
+printf 'unexpected broken venv python invocation: %s\n' "$*" >&2
+exit 9
+`)
+	if err := os.WriteFile(filepath.Join(venvDir, "BROKEN"), []byte("stale"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeExecutable(t, ffmpeg, "#!/bin/sh\nexit 0\n")
+	writeExecutable(t, ffprobe, "#!/bin/sh\nexit 0\n")
+
+	cfg := (config.Config{
+		PythonBin:  python,
+		VenvDir:    venvDir,
+		FFmpegBin:  ffmpeg,
+		FFprobeBin: ffprobe,
+	}).Normalize(project)
+	runner := executil.Runner{
+		Tools: cfg.ToolPaths(),
+		Env:   append(cfg.RuntimeEnv(), "CAPTURE_EVENTS="+events),
+	}
+
+	pythonExe, err := SetupRuntime(context.Background(), runner, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pythonExe != config.VenvPython(venvDir) {
+		t.Fatalf("pythonExe = %q, want %q", pythonExe, config.VenvPython(venvDir))
+	}
+	data, err := os.ReadFile(events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := string(data)
+	for _, want := range []string{"broken-verify", "create-venv", "new-pip"} {
+		if !strings.Contains(log, want) {
+			t.Fatalf("event log missing %q:\n%s", want, log)
+		}
+	}
+	if strings.Contains(log, "broken-pip") {
+		t.Fatalf("setup tried to install into the broken venv:\n%s", log)
+	}
+	if _, err := os.Stat(filepath.Join(venvDir, "BROKEN")); !os.IsNotExist(err) {
+		t.Fatalf("stale venv marker stat = %v, want removed", err)
+	}
+}
+
 func writeExecutable(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
