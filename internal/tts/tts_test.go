@@ -1,13 +1,18 @@
 package tts
 
 import (
+	"context"
+	"fmt"
 	"math"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/ai-video-dubber/ai-video-dubber-go/internal/executil"
 	"github.com/ai-video-dubber/ai-video-dubber-go/internal/srt"
 )
 
@@ -107,5 +112,40 @@ func TestWriteReportUsesPrivatePermissions(t *testing.T) {
 	}
 	if got := info.Mode().Perm(); got != 0o600 {
 		t.Fatalf("report permissions = %o, want 600", got)
+	}
+}
+
+func TestEnsureVoiceRejectsChecksumMismatch(t *testing.T) {
+	dir := t.TempDir()
+	voice := "pt_BR-test-medium"
+	model := filepath.Join(dir, voice+".onnx")
+	config := filepath.Join(dir, voice+".onnx.json")
+	modelData := []byte("tampered model")
+	configData := []byte(`{"audio":{"sample_rate":22050}}`)
+	if err := os.WriteFile(model, modelData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(config, configData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	index := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(writer, `{
+			"pt_BR-test-medium": {
+				"files": {
+					"pt/pt_BR/test/medium/pt_BR-test-medium.onnx": {"size_bytes": %d, "md5_digest": "00000000000000000000000000000000"},
+					"pt/pt_BR/test/medium/pt_BR-test-medium.onnx.json": {"size_bytes": %d, "md5_digest": "00000000000000000000000000000000"}
+				}
+			}
+		}`, len(modelData), len(configData))
+	}))
+	defer index.Close()
+	originalIndexURL := piperVoicesIndexURL
+	piperVoicesIndexURL = index.URL
+	defer func() { piperVoicesIndexURL = originalIndexURL }()
+
+	_, _, err := ensureVoice(context.Background(), executil.Runner{}, "python", voice, dir)
+	if err == nil || !strings.Contains(err.Error(), "checksum") {
+		t.Fatalf("ensureVoice error = %v, want checksum mismatch", err)
 	}
 }

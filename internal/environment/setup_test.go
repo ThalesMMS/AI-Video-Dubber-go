@@ -170,6 +170,12 @@ exit 9
 			t.Fatalf("pip invocation does not pin the index URL:\n%s", line)
 		}
 	}
+	dependencyInstall := lines[1]
+	for _, want := range []string{"openai-whisper==20250625", "piper-tts==1.4.2"} {
+		if !strings.Contains(dependencyInstall, want) {
+			t.Fatalf("dependency install does not pin %s:\n%s", want, dependencyInstall)
+		}
+	}
 }
 
 func writeExecutable(t *testing.T, path, content string) {

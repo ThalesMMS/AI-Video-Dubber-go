@@ -3,9 +3,12 @@ package tts
 
 import (
 	"context"
+	"crypto/md5"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -20,6 +23,8 @@ import (
 )
 
 const privateReportFileMode os.FileMode = 0o600
+
+var piperVoicesIndexURL = "https://huggingface.co/rhasspy/piper-voices/raw/main/voices.json"
 
 var (
 	sentenceEnd     = regexp.MustCompile(`[.!?…:][\]\)"'”’]*\s*$`)
@@ -380,6 +385,9 @@ func ensureVoice(ctx context.Context, runner executil.Runner, pythonExe, voice, 
 	}
 	model, config := locateVoiceFiles(dataDir, voice)
 	if model != "" && config != "" {
+		if err := verifyVoiceFiles(ctx, voice, model, config); err != nil {
+			return "", "", err
+		}
 		return model, config, nil
 	}
 	runnerLog(runner, "Downloading TTS voice: %s...", voice)
@@ -390,7 +398,109 @@ func ensureVoice(ctx context.Context, runner executil.Runner, pythonExe, voice, 
 	if model == "" || config == "" {
 		return "", "", fmt.Errorf("voice download completed, but %s.onnx and its config were not found in %s", voice, dataDir)
 	}
+	if err := verifyVoiceFiles(ctx, voice, model, config); err != nil {
+		return "", "", err
+	}
 	return model, config, nil
+}
+
+type piperVoiceIndexEntry struct {
+	Files   map[string]piperVoiceFile `json:"files"`
+	Aliases []string                  `json:"aliases"`
+}
+
+type piperVoiceFile struct {
+	SizeBytes int64  `json:"size_bytes"`
+	MD5Digest string `json:"md5_digest"`
+}
+
+func verifyVoiceFiles(ctx context.Context, voice, modelPath, configPath string) error {
+	index, err := fetchPiperVoiceIndex(ctx)
+	if err != nil {
+		return fmt.Errorf("verify Piper voice %q: %w", voice, err)
+	}
+	entry, ok := lookupPiperVoice(index, voice)
+	if !ok {
+		return fmt.Errorf("verify Piper voice %q: voice metadata was not found in Piper voices index", voice)
+	}
+	for _, path := range []string{modelPath, configPath} {
+		expected, ok := lookupPiperVoiceFile(entry, filepath.Base(path))
+		if !ok {
+			return fmt.Errorf("verify Piper voice %q: %s was not found in Piper voices index", voice, filepath.Base(path))
+		}
+		if err := verifyFileChecksum(path, expected); err != nil {
+			return fmt.Errorf("verify Piper voice %q: %w", voice, err)
+		}
+	}
+	return nil
+}
+
+func fetchPiperVoiceIndex(ctx context.Context) (map[string]piperVoiceIndexEntry, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, piperVoicesIndexURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	client := http.Client{Timeout: 30 * time.Second}
+	response, err := client.Do(request)
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return nil, fmt.Errorf("fetch Piper voices index: HTTP %d", response.StatusCode)
+	}
+	var index map[string]piperVoiceIndexEntry
+	if err := json.NewDecoder(io.LimitReader(response.Body, 4<<20)).Decode(&index); err != nil {
+		return nil, fmt.Errorf("decode Piper voices index: %w", err)
+	}
+	return index, nil
+}
+
+func lookupPiperVoice(index map[string]piperVoiceIndexEntry, voice string) (piperVoiceIndexEntry, bool) {
+	if entry, ok := index[voice]; ok {
+		return entry, true
+	}
+	for _, entry := range index {
+		for _, alias := range entry.Aliases {
+			if alias == voice {
+				return entry, true
+			}
+		}
+	}
+	return piperVoiceIndexEntry{}, false
+}
+
+func lookupPiperVoiceFile(entry piperVoiceIndexEntry, name string) (piperVoiceFile, bool) {
+	for path, file := range entry.Files {
+		if filepath.Base(path) == name {
+			return file, true
+		}
+	}
+	return piperVoiceFile{}, false
+}
+
+func verifyFileChecksum(path string, expected piperVoiceFile) error {
+	if strings.TrimSpace(expected.MD5Digest) == "" || expected.SizeBytes <= 0 {
+		return fmt.Errorf("%s has incomplete checksum metadata", filepath.Base(path))
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("open %s for checksum: %w", filepath.Base(path), err)
+	}
+	defer file.Close()
+	hash := md5.New()
+	size, err := io.Copy(hash, file)
+	if err != nil {
+		return fmt.Errorf("hash %s: %w", filepath.Base(path), err)
+	}
+	if size != expected.SizeBytes {
+		return fmt.Errorf("%s size mismatch: got %d bytes, want %d", filepath.Base(path), size, expected.SizeBytes)
+	}
+	digest := fmt.Sprintf("%x", hash.Sum(nil))
+	if !strings.EqualFold(digest, expected.MD5Digest) {
+		return fmt.Errorf("%s checksum mismatch: got %s, want %s", filepath.Base(path), digest, expected.MD5Digest)
+	}
+	return nil
 }
 
 func locateVoiceFiles(dataDir, voice string) (string, string) {

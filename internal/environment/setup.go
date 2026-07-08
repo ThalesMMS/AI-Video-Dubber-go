@@ -13,7 +13,13 @@ import (
 	"github.com/ai-video-dubber/ai-video-dubber-go/internal/tts"
 )
 
-const defaultPIPIndexURL = "https://pypi.org/simple"
+const (
+	defaultPIPIndexURL   = "https://pypi.org/simple"
+	openAIWhisperVersion = "20250625"
+	piperTTSVersion      = "1.4.2"
+	openAIWhisperPackage = "openai-whisper==" + openAIWhisperVersion
+	piperTTSPackage      = "piper-tts==" + piperTTSVersion
+)
 
 // Setup creates the runtime and makes sure the requested Piper voice is available.
 func Setup(ctx context.Context, runner executil.Runner, cfg config.Config, voice string) (string, error) {
@@ -35,7 +41,7 @@ func SetupRuntime(ctx context.Context, runner executil.Runner, cfg config.Config
 	return setupRuntime(ctx, runner, cfg, runtimeDependencies{
 		Name:        "Whisper/Piper",
 		Verify:      verifyPythonDependencies,
-		InstallArgs: pipInstallArgs("--upgrade", "openai-whisper", "piper-tts"),
+		InstallArgs: pipInstallArgs("--upgrade", openAIWhisperPackage, piperTTSPackage),
 	})
 }
 
@@ -44,7 +50,7 @@ func SetupWhisperRuntime(ctx context.Context, runner executil.Runner, cfg config
 	return setupRuntime(ctx, runner, cfg, runtimeDependencies{
 		Name:        "Whisper",
 		Verify:      verifyWhisperDependency,
-		InstallArgs: pipInstallArgs("--upgrade", "openai-whisper"),
+		InstallArgs: pipInstallArgs("--upgrade", openAIWhisperPackage),
 	})
 }
 
