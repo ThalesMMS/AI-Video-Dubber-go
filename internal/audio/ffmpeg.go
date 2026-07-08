@@ -14,6 +14,8 @@ import (
 	"github.com/ai-video-dubber/ai-video-dubber-go/internal/executil"
 )
 
+const privateOutputFileMode os.FileMode = 0o600
+
 // ExtractMP3 extracts the first audio stream as high-quality VBR MP3.
 func ExtractMP3(ctx context.Context, runner executil.Runner, videoPath, outputPath string) error {
 	return atomicMediaOutput(outputPath, func(tempPath string) error {
@@ -290,7 +292,7 @@ func atomicMediaOutput(destination string, render func(string) error) error {
 	if !info.Mode().IsRegular() || info.Size() == 0 {
 		return fmt.Errorf("rendered media output is empty: %s", tempName)
 	}
-	if err := os.Chmod(tempName, 0o644); err != nil {
+	if err := os.Chmod(tempName, privateOutputFileMode); err != nil {
 		return fmt.Errorf("set rendered media permissions: %w", err)
 	}
 	if err := replaceOutputFile(tempName, destination); err != nil {
@@ -325,7 +327,7 @@ func copyFileAtomic(source, destination string) error {
 		_ = temp.Close()
 		return fmt.Errorf("sync temporary output: %w", err)
 	}
-	if err := temp.Chmod(0o644); err != nil {
+	if err := temp.Chmod(privateOutputFileMode); err != nil {
 		_ = temp.Close()
 		return fmt.Errorf("set temporary output permissions: %w", err)
 	}

@@ -2,6 +2,8 @@ package tts
 
 import (
 	"math"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -87,5 +89,23 @@ func TestExcerptUsesRunes(t *testing.T) {
 	got := excerpt("áéíóú abc", 6)
 	if !strings.HasSuffix(got, "…") || len([]rune(got)) != 6 {
 		t.Fatalf("excerpt = %q", got)
+	}
+}
+
+func TestWriteReportUsesPrivatePermissions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "report.json")
+	err := writeReport(path, []GroupReport{{
+		ID:   1,
+		Text: "sensitive transcript",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("report permissions = %o, want 600", got)
 	}
 }

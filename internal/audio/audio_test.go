@@ -131,7 +131,7 @@ func TestWriteAndConcatenateSilenceWAV(t *testing.T) {
 	}
 }
 
-func TestCopyFileAtomicUsesReadablePermissions(t *testing.T) {
+func TestCopyFileAtomicUsesPrivatePermissions(t *testing.T) {
 	dir := t.TempDir()
 	source := filepath.Join(dir, "source.wav")
 	destination := filepath.Join(dir, "destination.wav")
@@ -145,8 +145,26 @@ func TestCopyFileAtomicUsesReadablePermissions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := info.Mode().Perm(); got != 0o644 {
-		t.Fatalf("destination permissions = %o, want 644", got)
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("destination permissions = %o, want 600", got)
+	}
+}
+
+func TestAtomicMediaOutputUsesPrivatePermissions(t *testing.T) {
+	dir := t.TempDir()
+	destination := filepath.Join(dir, "destination.mp4")
+	err := atomicMediaOutput(destination, func(tempPath string) error {
+		return os.WriteFile(tempPath, []byte("media"), 0o666)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("destination permissions = %o, want 600", got)
 	}
 }
 

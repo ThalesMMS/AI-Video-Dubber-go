@@ -19,6 +19,8 @@ import (
 	"github.com/ai-video-dubber/ai-video-dubber-go/internal/srt"
 )
 
+const privateReportFileMode os.FileMode = 0o600
+
 var (
 	sentenceEnd     = regexp.MustCompile(`[.!?…:][\]\)"'”’]*\s*$`)
 	pauseEnd        = regexp.MustCompile(`[,;:!?….][\]\)"'”’]*\s*$`)
@@ -616,7 +618,7 @@ func writeReport(path string, reports []GroupReport) error {
 		_ = temp.Close()
 		return fmt.Errorf("sync TTS report: %w", err)
 	}
-	if err := temp.Chmod(0o644); err != nil {
+	if err := temp.Chmod(privateReportFileMode); err != nil {
 		_ = temp.Close()
 		return fmt.Errorf("set TTS report permissions: %w", err)
 	}
