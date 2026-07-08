@@ -131,7 +131,7 @@ func (r Runner) Output(ctx context.Context, name string, args []string, options 
 		err = ctx.Err()
 	}
 	if err != nil {
-		return buffer.String(), &CommandError{Name: commandName, Args: append([]string(nil), args...), Err: err, Output: buffer.String()}
+		return buffer.String(), &CommandError{Name: commandName, Args: append([]string(nil), args...), Err: err, Output: RedactSecrets(buffer.String())}
 	}
 	return buffer.String(), nil
 }
@@ -186,7 +186,7 @@ func (w *lineWriter) Write(data []byte) (int, error) {
 		if index < 0 {
 			break
 		}
-		line := strings.TrimRight(string(w.pending[:index]), "\r")
+		line := RedactSecrets(strings.TrimRight(string(w.pending[:index]), "\r"))
 		w.pending = w.pending[index+1:]
 		if !w.quiet && w.log != nil && strings.TrimSpace(line) != "" {
 			w.log(line)
@@ -199,7 +199,7 @@ func (w *lineWriter) Flush() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if len(w.pending) > 0 && !w.quiet && w.log != nil {
-		line := strings.TrimRight(string(w.pending), "\r\n")
+		line := RedactSecrets(strings.TrimRight(string(w.pending), "\r\n"))
 		if strings.TrimSpace(line) != "" {
 			w.log(line)
 		}
@@ -210,7 +210,7 @@ func (w *lineWriter) Flush() {
 func (w *lineWriter) Tail() string {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return string(append([]byte(nil), w.tail...))
+	return RedactSecrets(string(append([]byte(nil), w.tail...)))
 }
 
 func (w *lineWriter) appendTail(data []byte) {

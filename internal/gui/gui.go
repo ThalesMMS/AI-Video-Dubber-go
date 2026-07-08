@@ -26,6 +26,7 @@ import (
 
 	"github.com/ai-video-dubber/ai-video-dubber-go/assets"
 	"github.com/ai-video-dubber/ai-video-dubber-go/internal/config"
+	"github.com/ai-video-dubber/ai-video-dubber-go/internal/executil"
 	"github.com/ai-video-dubber/ai-video-dubber-go/internal/language"
 	"github.com/ai-video-dubber/ai-video-dubber-go/internal/pipeline"
 )
@@ -407,8 +408,12 @@ func (u *ui) openLogFile(inputPath string, mode config.Mode) {
 		base = string(mode)
 	}
 	logPath := filepath.Join(logDir, base+"-"+timestamp+".log")
-	file, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	file, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
+		return
+	}
+	if err := file.Chmod(0o600); err != nil {
+		_ = file.Close()
 		return
 	}
 	u.logFile = file
@@ -429,6 +434,7 @@ func (u *ui) closeLogFile() {
 
 // OnLog implements pipeline.Observer.
 func (u *ui) OnLog(line string) {
+	line = executil.RedactSecrets(line)
 	u.mu.Lock()
 	appendDisplayLog(&u.logBuilder, line, maxLogBytes)
 	if u.logFile != nil && strings.TrimSpace(line) != "" {
