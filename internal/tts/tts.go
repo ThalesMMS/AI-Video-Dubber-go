@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -126,6 +127,7 @@ type Options struct {
 	DisableTextNormalization bool
 	KeepTemp                 bool
 	ReportPath               string
+	Parallelism              int
 }
 
 // Defaults mirrors the quality-oriented settings of the Python implementation.
@@ -140,6 +142,7 @@ func Defaults() Options {
 		MaxGroupChars:            300,
 		SentenceBreakGap:         180 * time.Millisecond,
 		MinSentenceGroupDuration: 3200 * time.Millisecond,
+		Parallelism:              runtime.NumCPU(),
 	}
 }
 
@@ -206,6 +209,7 @@ func Synthesize(
 	options Options,
 ) error {
 	options = normalizeOptions(options)
+	runner = serializeRunnerLog(runner)
 	cues, err := srt.ReadTimestampedFile(inputPath)
 	if err != nil {
 		return err
@@ -235,11 +239,11 @@ func Synthesize(
 	if err != nil {
 		return err
 	}
-	piper, err := startPiperWorker(ctx, runner, pythonExe, modelPath, configPath)
+	piperWorkers, err := startPiperWorkers(ctx, runner, pythonExe, modelPath, configPath, ttsParallelism(options, len(groups)))
 	if err != nil {
-		return fmt.Errorf("start Piper worker: %w", err)
+		return fmt.Errorf("start Piper workers: %w", err)
 	}
-	defer piper.Close()
+	defer closePiperWorkers(piperWorkers)
 
 	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
 		return fmt.Errorf("create audio output directory: %w", err)
@@ -258,13 +262,19 @@ func Synthesize(
 		defer os.RemoveAll(workDir)
 	}
 
+	groupResults, err := synthesizeGroups(ctx, runner, piperWorkers, groups, workDir, voiceDefaults, options)
+	if err != nil {
+		return err
+	}
+
 	parts := make([]string, 0, len(groups)*2)
 	reports := make([]GroupReport, 0, len(groups))
 	cursor := time.Duration(0)
-	for _, group := range groups {
+	for _, result := range groupResults {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+		group := result.Group
 		gap := group.Start - cursor
 		if gap > time.Millisecond {
 			silencePath := filepath.Join(workDir, fmt.Sprintf("%04d_gap.wav", group.ID))
@@ -273,42 +283,9 @@ func Synthesize(
 			}
 			parts = append(parts, silencePath)
 		}
-
-		attempts, err := synthesizeAttempts(ctx, runner, piper, group, workDir, voiceDefaults, options)
-		if err != nil {
-			return err
-		}
-		best, err := selectBestAttempt(attempts, group.Duration(), options.MaxAtempo)
-		if err != nil {
-			return fmt.Errorf("select synthesis attempt for group %d: %w", group.ID, err)
-		}
-		speedup, trimmed := fitSpeed(best.Duration, group.Duration(), options.MaxAtempo)
-		fittedPath := filepath.Join(workDir, fmt.Sprintf("%04d_slot.wav", group.ID))
-		if err := audio.FitPCMToSlot(ctx, runner, best.Path, fittedPath, group.Duration(), voiceDefaults.SampleRate, speedup, trimmed); err != nil {
-			return err
-		}
-		parts = append(parts, fittedPath)
+		parts = append(parts, result.FittedPath)
 		cursor = group.End
-
-		cueIndices := make([]int, len(group.Cues))
-		for i, cue := range group.Cues {
-			cueIndices[i] = cue.Index
-		}
-		reports = append(reports, GroupReport{
-			ID: group.ID, CueIndices: cueIndices,
-			StartSeconds: group.Start.Seconds(), EndSeconds: group.End.Seconds(),
-			TargetSeconds: group.Duration().Seconds(), Text: group.Text,
-			ChosenLengthScale: best.LengthScale, RawSeconds: best.Duration.Seconds(),
-			SpeedupApplied: speedup, TrimmedFallback: trimmed,
-			SampleRate: voiceDefaults.SampleRate,
-		})
-
-		runnerLog(runner,
-			"[%03d/%03d] %s → %s | slot=%5.2fs raw=%5.2fs scale=%.2f tempo=%.2f%s | %s",
-			group.ID, len(groups), formatDuration(group.Start), formatDuration(group.End),
-			group.Duration().Seconds(), best.Duration.Seconds(), best.LengthScale, speedup,
-			map[bool]string{true: " TRIM", false: ""}[trimmed], excerpt(group.Text, 72),
-		)
+		reports = append(reports, result.Report)
 	}
 
 	finalWAV := filepath.Join(workDir, "final_synced.wav")
@@ -433,7 +410,38 @@ func normalizeOptions(options Options) Options {
 	if options.MinSentenceGroupDuration <= 0 {
 		options.MinSentenceGroupDuration = defaults.MinSentenceGroupDuration
 	}
+	if options.Parallelism <= 0 {
+		options.Parallelism = defaults.Parallelism
+	}
 	return options
+}
+
+func ttsParallelism(options Options, groupCount int) int {
+	parallelism := options.Parallelism
+	if parallelism <= 0 {
+		parallelism = runtime.NumCPU()
+	}
+	if parallelism < 1 {
+		parallelism = 1
+	}
+	if groupCount > 0 && parallelism > groupCount {
+		parallelism = groupCount
+	}
+	return parallelism
+}
+
+func serializeRunnerLog(runner executil.Runner) executil.Runner {
+	if runner.Log == nil {
+		return runner
+	}
+	log := runner.Log
+	var mu sync.Mutex
+	runner.Log = func(line string) {
+		mu.Lock()
+		defer mu.Unlock()
+		log(line)
+	}
+	return runner
 }
 
 func normalizeText(text, languageCode string) string {
@@ -727,6 +735,30 @@ func startPiperWorker(ctx context.Context, runner executil.Runner, pythonExe, mo
 	}
 }
 
+func startPiperWorkers(ctx context.Context, runner executil.Runner, pythonExe, modelPath, configPath string, count int) ([]*piperWorker, error) {
+	if count < 1 {
+		count = 1
+	}
+	workers := make([]*piperWorker, 0, count)
+	for index := 0; index < count; index++ {
+		worker, err := startPiperWorker(ctx, runner, pythonExe, modelPath, configPath)
+		if err != nil {
+			closePiperWorkers(workers)
+			return nil, fmt.Errorf("worker %d/%d: %w", index+1, count, err)
+		}
+		workers = append(workers, worker)
+	}
+	return workers, nil
+}
+
+func closePiperWorkers(workers []*piperWorker) {
+	for _, worker := range workers {
+		if worker != nil {
+			worker.Close()
+		}
+	}
+}
+
 func (w *piperWorker) wait() {
 	err := w.cmd.Wait()
 	w.waitMu.Lock()
@@ -835,6 +867,126 @@ func piperResponseError(response piperResponse) error {
 		return fmt.Errorf("%s\n%s", response.Error, strings.TrimSpace(response.Trace))
 	}
 	return fmt.Errorf("%s", response.Error)
+}
+
+type synthesisGroupJob struct {
+	Index int
+	Group Group
+}
+
+type synthesisGroupResult struct {
+	Index      int
+	Group      Group
+	FittedPath string
+	Report     GroupReport
+	Err        error
+}
+
+func synthesizeGroups(ctx context.Context, runner executil.Runner, workers []*piperWorker, groups []Group, workDir string, defaults voiceConfig, options Options) ([]synthesisGroupResult, error) {
+	if len(groups) == 0 {
+		return nil, nil
+	}
+	if len(workers) == 0 {
+		return nil, fmt.Errorf("no Piper workers available")
+	}
+	runnerLog(runner, "Synthesizing %d group(s) with %d Piper worker(s).", len(groups), len(workers))
+
+	stepCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	jobs := make(chan synthesisGroupJob)
+	results := make(chan synthesisGroupResult, len(groups))
+	var workerGroup sync.WaitGroup
+	for _, worker := range workers {
+		piper := worker
+		workerGroup.Add(1)
+		go func() {
+			defer workerGroup.Done()
+			for job := range jobs {
+				if stepCtx.Err() != nil {
+					return
+				}
+				result, err := synthesizeGroup(stepCtx, runner, piper, job.Group, len(groups), workDir, defaults, options)
+				result.Index = job.Index
+				result.Err = err
+				results <- result
+				if err != nil {
+					return
+				}
+			}
+		}()
+	}
+	go func() {
+		defer close(jobs)
+		for index, group := range groups {
+			select {
+			case <-stepCtx.Done():
+				return
+			case jobs <- synthesisGroupJob{Index: index, Group: group}:
+			}
+		}
+	}()
+	go func() {
+		workerGroup.Wait()
+		close(results)
+	}()
+
+	ordered := make([]synthesisGroupResult, len(groups))
+	var firstErr error
+	for result := range results {
+		if result.Err != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("synthesize group %d: %w", result.Group.ID, result.Err)
+				cancel()
+			}
+			continue
+		}
+		ordered[result.Index] = result
+	}
+	if firstErr != nil {
+		return nil, firstErr
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return ordered, nil
+}
+
+func synthesizeGroup(ctx context.Context, runner executil.Runner, piper *piperWorker, group Group, groupCount int, workDir string, defaults voiceConfig, options Options) (synthesisGroupResult, error) {
+	attempts, err := synthesizeAttempts(ctx, runner, piper, group, workDir, defaults, options)
+	if err != nil {
+		return synthesisGroupResult{Group: group}, err
+	}
+	best, err := selectBestAttempt(attempts, group.Duration(), options.MaxAtempo)
+	if err != nil {
+		return synthesisGroupResult{Group: group}, fmt.Errorf("select synthesis attempt: %w", err)
+	}
+	speedup, trimmed := fitSpeed(best.Duration, group.Duration(), options.MaxAtempo)
+	fittedPath := filepath.Join(workDir, fmt.Sprintf("%04d_slot.wav", group.ID))
+	if err := audio.FitPCMToSlot(ctx, runner, best.Path, fittedPath, group.Duration(), defaults.SampleRate, speedup, trimmed); err != nil {
+		return synthesisGroupResult{Group: group}, err
+	}
+
+	cueIndices := make([]int, len(group.Cues))
+	for i, cue := range group.Cues {
+		cueIndices[i] = cue.Index
+	}
+	report := GroupReport{
+		ID: group.ID, CueIndices: cueIndices,
+		StartSeconds: group.Start.Seconds(), EndSeconds: group.End.Seconds(),
+		TargetSeconds: group.Duration().Seconds(), Text: group.Text,
+		ChosenLengthScale: best.LengthScale, RawSeconds: best.Duration.Seconds(),
+		SpeedupApplied: speedup, TrimmedFallback: trimmed,
+		SampleRate: defaults.SampleRate,
+	}
+
+	runnerLog(runner,
+		"[%03d/%03d] %s → %s | slot=%5.2fs raw=%5.2fs scale=%.2f tempo=%.2f%s | %s",
+		group.ID, groupCount, formatDuration(group.Start), formatDuration(group.End),
+		group.Duration().Seconds(), best.Duration.Seconds(), best.LengthScale, speedup,
+		map[bool]string{true: " TRIM", false: ""}[trimmed], excerpt(group.Text, 72),
+	)
+	return synthesisGroupResult{Group: group, FittedPath: fittedPath, Report: report}, nil
 }
 
 func synthesizeAttempts(ctx context.Context, runner executil.Runner, piper *piperWorker, group Group, workDir string, defaults voiceConfig, options Options) ([]attempt, error) {

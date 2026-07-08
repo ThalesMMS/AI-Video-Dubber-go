@@ -254,6 +254,7 @@ func (p Pipeline) Run(ctx context.Context, rawConfig config.Config) (Result, err
 		options := tts.Defaults()
 		options.LanguageCode = lang.Code
 		options.KeepTemp = cfg.KeepTemp
+		options.Parallelism = cfg.TTSParallelism
 		if err := tts.Synthesize(ctx, runner, pythonExe, paths.TranslatedSRT, paths.SyncedAudio, lang.Voice, cfg.VoiceDataDir, options); err != nil {
 			return fail(current, err)
 		}

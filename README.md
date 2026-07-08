@@ -160,10 +160,12 @@ Example with explicit API and model:
   --batch-size 10 \
   --translation-parallelism 3 \
   --translation-timeout 10m \
+  --tts-parallelism 4 \
   --force
 ```
 
 `--batch-size` controls how many subtitle cues are translated per API request. `--translation-parallelism` controls how many translation batches may run at once; set it to `1` for serial requests against strict rate limits. `--translation-timeout` defaults to `120s`; increase it for slower local OpenAI-compatible models.
+`--tts-parallelism` controls how many Piper worker processes synthesize audio groups at once; it defaults to the CPU count, and `1` restores serial TTS.
 
 The headless binary accepts the same subcommands:
 
@@ -196,6 +198,7 @@ The headless binary accepts the same subcommands:
 ./bin/ai-video-dubber-cli synthesize \
   --input video.pt-BR.srt \
   --language pt-BR \
+  --tts-parallelism 4 \
   --report-json video.pt-BR.tts-report.json
 
 # 5. Video + new audio -> final video

@@ -78,11 +78,12 @@ func TestParseCompleteRunConfigKeepsDubTTSFlags(t *testing.T) {
 		"--input", "video.mp4",
 		"--data-dir", dataDir,
 		"--keep-temp",
+		"--tts-parallelism", "2",
 	}, config.ModeDub)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.VoiceDataDir != dataDir || !cfg.KeepTemp {
+	if cfg.VoiceDataDir != dataDir || !cfg.KeepTemp || cfg.TTSParallelism != 2 {
 		t.Fatalf("unexpected TTS config: %#v", cfg)
 	}
 }
@@ -114,6 +115,7 @@ func TestSynthesizeUsageGroupsAdvancedFlagsAndShowsExamples(t *testing.T) {
 		"Advanced grouping and timing controls:",
 		"--input string\n      translated .srt or .segments.txt file (required)",
 		"--keep-temp\n      keep intermediate WAV files",
+		"--tts-parallelism int\n      concurrent Piper worker processes",
 		"--length-scale 1.12 --sentence-silence 0.35",
 		"--max-group-gap-ms 250 --max-group-duration-ms 4500",
 	} {

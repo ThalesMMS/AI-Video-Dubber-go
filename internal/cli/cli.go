@@ -122,13 +122,16 @@ func parseCompleteRunConfig(name string, args []string, mode config.Mode) (confi
 	force := set.Bool("force", false, "regenerate intermediate files")
 	dataDir := defaults.VoiceDataDir
 	keepTemp := false
+	ttsParallelism := defaults.TTSParallelism
 	subtitleBurnIn := false
 	var dataDirFlag *string
 	var keepTempFlag *bool
+	var ttsParallelismFlag *int
 	var burnInFlag *bool
 	if mode == config.ModeDub {
 		dataDirFlag = set.String("data-dir", envOr("DATA_DIR", defaults.VoiceDataDir), "Piper voice directory")
 		keepTempFlag = set.Bool("keep-temp", false, "keep TTS intermediate WAV files")
+		ttsParallelismFlag = set.Int("tts-parallelism", defaults.TTSParallelism, "concurrent Piper worker processes")
 	} else if mode == config.ModeSubtitle {
 		burnInFlag = set.Bool("burn-in", false, "render subtitles into the video pixels instead of adding a selectable subtitle track")
 	}
@@ -140,6 +143,9 @@ func parseCompleteRunConfig(name string, args []string, mode config.Mode) (confi
 	}
 	if keepTempFlag != nil {
 		keepTemp = *keepTempFlag
+	}
+	if ttsParallelismFlag != nil {
+		ttsParallelism = *ttsParallelismFlag
 	}
 	if burnInFlag != nil {
 		subtitleBurnIn = *burnInFlag
@@ -167,6 +173,7 @@ func parseCompleteRunConfig(name string, args []string, mode config.Mode) (confi
 	cfg.TranslationBatchSize = *batch
 	cfg.TranslationParallelism = *translationParallelism
 	cfg.TranslationTimeout = *translationTimeout
+	cfg.TTSParallelism = ttsParallelism
 	cfg.Force = *force
 	cfg.KeepTemp = keepTemp
 	return cfg, nil
@@ -298,6 +305,7 @@ func runSynthesize(ctx context.Context, args []string, projectDir string) error 
 	options.KeepTemp = *flags.keepTemp
 	options.ReportPath = strings.TrimSpace(*flags.reportJSON)
 	options.DisableTextNormalization = *flags.noNormalization
+	options.Parallelism = *flags.parallelism
 	options.SentenceSilence = *flags.sentenceSilence
 	options.MinLengthScale = *flags.minLengthScale
 	options.MaxLengthScale = *flags.maxLengthScale
@@ -337,6 +345,7 @@ type synthesizeFlags struct {
 	reportJSON            *string
 	keepTemp              *bool
 	noNormalization       *bool
+	parallelism           *int
 	speaker               *int
 	maxGroupGapMS         *int
 	maxGroupDurationMS    *int
@@ -364,6 +373,7 @@ func addSynthesizeFlags(set *flag.FlagSet, defaults config.Config, ttsDefaults t
 		keepTemp:              set.Bool("keep-temp", false, "keep intermediate WAV files"),
 		reportJSON:            set.String("report-json", "", "write per-group timing diagnostics as JSON"),
 		noNormalization:       set.Bool("no-text-normalization", false, "disable TTS-oriented text normalization"),
+		parallelism:           set.Int("tts-parallelism", ttsDefaults.Parallelism, "concurrent Piper worker processes"),
 		speaker:               set.Int("speaker", -1, "Piper speaker ID for multi-speaker voices"),
 		sentenceSilence:       set.Float64("sentence-silence", ttsDefaults.SentenceSilence, "Piper sentence silence in seconds"),
 		lengthScale:           set.Float64("length-scale", 0, "override the voice's base length scale"),
@@ -388,7 +398,7 @@ Basic options:`)
 	printFlagGroup(writer, set, []string{"input", "output", "language", "voice", "report-json"})
 	fmt.Fprintln(writer, `
 Runtime/cache options:`)
-	printFlagGroup(writer, set, []string{"python", "venv", "data-dir", "keep-temp"})
+	printFlagGroup(writer, set, []string{"python", "venv", "data-dir", "keep-temp", "tts-parallelism"})
 	fmt.Fprintln(writer, `
 Advanced voice controls:`)
 	printFlagGroup(writer, set, []string{"sentence-silence", "length-scale", "noise-scale", "noise-w", "speaker", "no-text-normalization"})

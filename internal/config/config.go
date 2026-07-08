@@ -51,6 +51,7 @@ type Config struct {
 	TranslationBatchSize   int
 	TranslationParallelism int
 	TranslationTimeout     time.Duration
+	TTSParallelism         int
 }
 
 // BundledResources describes the relocatable tools shipped beside a binary.
@@ -78,6 +79,7 @@ func Defaults() Config {
 		TranslationBatchSize:   DefaultBatchSize,
 		TranslationParallelism: DefaultTranslationParallelism,
 		TranslationTimeout:     DefaultTranslationTimeout,
+		TTSParallelism:         runtime.NumCPU(),
 	}
 }
 
@@ -131,6 +133,9 @@ func (c Config) Normalize(projectDir string) Config {
 	}
 	if c.TranslationTimeout <= 0 {
 		c.TranslationTimeout = defaults.TranslationTimeout
+	}
+	if c.TTSParallelism <= 0 {
+		c.TTSParallelism = defaults.TTSParallelism
 	}
 	if c.Mode != ModeSubtitle {
 		c.SubtitleBurnIn = false

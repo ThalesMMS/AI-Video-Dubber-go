@@ -2,6 +2,7 @@ package tts
 
 import (
 	"context"
+	"crypto/md5"
 	"fmt"
 	"math"
 	"net/http"
@@ -253,5 +254,137 @@ exit 1
 	}
 	if attempts[0].Duration != 1500*time.Millisecond {
 		t.Fatalf("duration = %s, want 1.5s", attempts[0].Duration)
+	}
+}
+
+func TestSynthesizeRunsGroupsConcurrently(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script test")
+	}
+	dir := t.TempDir()
+	template := filepath.Join(dir, "template.wav")
+	if err := audio.WriteSilencePCM16Mono(template, (900 * time.Millisecond).Nanoseconds(), 22050); err != nil {
+		t.Fatal(err)
+	}
+	firstStarted := filepath.Join(dir, "first-started")
+	secondStarted := filepath.Join(dir, "second-started")
+	t.Setenv("PIPER_TEMPLATE_WAV", template)
+	t.Setenv("FIRST_GROUP_STARTED", firstStarted)
+	t.Setenv("SECOND_GROUP_STARTED", secondStarted)
+
+	python := filepath.Join(dir, "python")
+	if err := os.WriteFile(python, []byte(`#!/bin/sh
+if [ "$1" = "-m" ]; then
+  exit 0
+fi
+if [ "$1" = "-u" ]; then
+  printf '{"ready":true}\n'
+  while IFS= read -r line; do
+    output=$(printf '%s\n' "$line" | sed -n 's/.*"output_path":"\([^"]*\)".*/\1/p')
+    text=$(printf '%s\n' "$line" | sed -n 's/.*"text":"\([^"]*\)".*/\1/p')
+    case "$text" in
+      One)
+        printf started > "$FIRST_GROUP_STARTED"
+        i=0
+        while [ ! -f "$SECOND_GROUP_STARTED" ] && [ "$i" -lt 50 ]; do
+          sleep 0.02
+          i=$((i + 1))
+        done
+        if [ ! -f "$SECOND_GROUP_STARTED" ]; then
+          printf '{"error":"second group did not start concurrently"}\n'
+          continue
+        fi
+        ;;
+      Two)
+        i=0
+        while [ ! -f "$FIRST_GROUP_STARTED" ] && [ "$i" -lt 50 ]; do
+          sleep 0.02
+          i=$((i + 1))
+        done
+        if [ ! -f "$FIRST_GROUP_STARTED" ]; then
+          printf '{"error":"first group did not start concurrently"}\n'
+          continue
+        fi
+        printf started > "$SECOND_GROUP_STARTED"
+        ;;
+    esac
+    cp "$PIPER_TEMPLATE_WAV" "$output"
+    printf '{"ok":true}\n'
+  done
+  exit 0
+fi
+exit 1
+`), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ffmpeg := filepath.Join(dir, "ffmpeg")
+	if err := os.WriteFile(ffmpeg, []byte(`#!/bin/sh
+input=
+last=
+previous=
+for arg do
+  if [ "$previous" = "-i" ]; then
+    input="$arg"
+  fi
+  previous="$arg"
+  last="$arg"
+done
+cp "$input" "$last"
+exit 0
+`), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	voice := "pt_BR-test-medium"
+	modelData := []byte("model")
+	configData := []byte(`{"audio":{"sample_rate":22050},"inference":{"length_scale":1,"noise_scale":0.667,"noise_w":0.8}}`)
+	model := filepath.Join(dir, voice+".onnx")
+	config := filepath.Join(dir, voice+".onnx.json")
+	if err := os.WriteFile(model, modelData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(config, configData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	modelDigest := md5.Sum(modelData)
+	configDigest := md5.Sum(configData)
+	index := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		_, _ = fmt.Fprintf(writer, `{
+			"%s": {
+				"files": {
+					"%s": {"size_bytes": %d, "md5_digest": "%x"},
+					"%s": {"size_bytes": %d, "md5_digest": "%x"}
+				}
+			}
+		}`, voice, filepath.Base(model), len(modelData), modelDigest, filepath.Base(config), len(configData), configDigest)
+	}))
+	defer index.Close()
+	originalIndexURL := piperVoicesIndexURL
+	piperVoicesIndexURL = index.URL
+	defer func() { piperVoicesIndexURL = originalIndexURL }()
+
+	input := filepath.Join(dir, "input.srt")
+	content := strings.Join([]string{
+		"1\n00:00:00,000 --> 00:00:01,000\nOne",
+		"2\n00:00:02,000 --> 00:00:03,000\nTwo",
+		"",
+	}, "\n\n")
+	if err := os.WriteFile(input, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	output := filepath.Join(dir, "output.wav")
+	options := Defaults()
+	options.MinLengthScale = 1
+	options.MaxLengthScale = 1
+	options.Parallelism = 2
+
+	err := Synthesize(context.Background(), executil.Runner{Tools: map[string]string{"ffmpeg": ffmpeg}}, python, input, output, voice, dir, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{firstStarted, secondStarted, output} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("expected %s to exist: %v", path, err)
+		}
 	}
 }

@@ -20,6 +20,9 @@ func TestNormalize(t *testing.T) {
 	if cfg.TranslationParallelism != DefaultTranslationParallelism {
 		t.Fatalf("TranslationParallelism = %d, want %d", cfg.TranslationParallelism, DefaultTranslationParallelism)
 	}
+	if cfg.TTSParallelism != runtime.NumCPU() {
+		t.Fatalf("TTSParallelism = %d, want %d", cfg.TTSParallelism, runtime.NumCPU())
+	}
 	if cfg.Mode != ModeDub {
 		t.Fatalf("Mode = %q, want %q", cfg.Mode, ModeDub)
 	}
