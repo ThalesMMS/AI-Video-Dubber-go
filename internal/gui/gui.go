@@ -30,6 +30,7 @@ import (
 	"github.com/ai-video-dubber/ai-video-dubber-go/internal/executil"
 	"github.com/ai-video-dubber/ai-video-dubber-go/internal/language"
 	"github.com/ai-video-dubber/ai-video-dubber-go/internal/pipeline"
+	"github.com/ai-video-dubber/ai-video-dubber-go/internal/transcription"
 	"github.com/ai-video-dubber/ai-video-dubber-go/internal/translation"
 	"github.com/ai-video-dubber/ai-video-dubber-go/internal/usererror"
 )
@@ -46,6 +47,7 @@ var whisperModelOptions = []string{"tiny", "base", "small", "medium", "large-v3"
 
 // Run creates the desktop application and blocks until it exits.
 func Run(projectDir string) {
+	defer transcription.ShutdownWorkers()
 	application := app.NewWithID("io.github.ai-video-dubber")
 	application.Settings().SetTheme(newDubberTheme())
 	window := application.NewWindow("AI Video Dubber")

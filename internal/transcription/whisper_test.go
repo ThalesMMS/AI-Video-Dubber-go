@@ -2,6 +2,7 @@ package transcription
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -55,18 +56,8 @@ func TestRunLogsWhisperModelLoadBeforePythonStarts(t *testing.T) {
 		t.Skip("shell-script test")
 	}
 	dir := t.TempDir()
-	python := filepath.Join(dir, "python")
-	if err := os.WriteFile(python, []byte(`#!/bin/sh
-output=""
-for arg do
-  output="$arg"
-done
-cat > "$output" <<'JSON'
-{"text":"Hello","segments":[{"start":0,"end":1,"text":"Hello","no_speech_prob":0.01,"avg_logprob":-0.1,"compression_ratio":1.0}]}
-JSON
-`), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	t.Cleanup(ShutdownWorkers)
+	python, _ := writeFakeWhisperPython(t, dir)
 	var logs []string
 	outputs := OutputPaths{
 		SRT:      filepath.Join(dir, "out.srt"),
@@ -83,4 +74,73 @@ JSON
 	if !strings.Contains(joined, "Loading Whisper model large-v3") || !strings.Contains(joined, "first use may download") {
 		t.Fatalf("logs missing first-run model loading hint:\n%s", joined)
 	}
+}
+
+func TestRunReusesWhisperWorkerAcrossCalls(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script test")
+	}
+	dir := t.TempDir()
+	t.Cleanup(ShutdownWorkers)
+	python, starts := writeFakeWhisperPython(t, dir)
+
+	for index := 0; index < 2; index++ {
+		outputs := OutputPaths{
+			SRT:      filepath.Join(dir, fmt.Sprintf("out-%d.srt", index)),
+			Segments: filepath.Join(dir, fmt.Sprintf("out-%d.segments.txt", index)),
+			JSON:     filepath.Join(dir, fmt.Sprintf("out-%d.json", index)),
+			Text:     filepath.Join(dir, fmt.Sprintf("out-%d.txt", index)),
+		}
+		if err := Run(context.Background(), executil.Runner{}, python, fmt.Sprintf("input-%d.mp3", index), "large-v3", "en", outputs); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	data, err := os.ReadFile(starts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count := strings.Count(string(data), "start\n"); count != 1 {
+		t.Fatalf("python starts = %d, want one long-lived worker; starts log:\n%s", count, string(data))
+	}
+}
+
+func writeFakeWhisperPython(t *testing.T, dir string) (string, string) {
+	t.Helper()
+	starts := filepath.Join(dir, "whisper-starts")
+	t.Setenv("WHISPER_STARTS", starts)
+	python := filepath.Join(dir, "python")
+	if err := os.WriteFile(python, []byte(`#!/bin/sh
+printf 'start\n' >> "$WHISPER_STARTS"
+
+write_result() {
+  output="$1"
+  cat > "$output" <<'JSON'
+{"text":"Hello","segments":[{"start":0,"end":1,"text":"Hello","no_speech_prob":0.01,"avg_logprob":-0.1,"compression_ratio":1.0}]}
+JSON
+}
+
+if [ "$1" = "-u" ]; then
+  printf '{"ready":true}\n'
+  while IFS= read -r line; do
+    output=$(printf '%s\n' "$line" | sed -n 's/.*"output_json":"\([^"]*\)".*/\1/p')
+    if [ -z "$output" ]; then
+      printf '{"error":"missing output_json"}\n'
+      continue
+    fi
+    write_result "$output"
+    printf '{"ok":true}\n'
+  done
+  exit 0
+fi
+
+output=""
+for arg do
+  output="$arg"
+done
+write_result "$output"
+`), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return python, starts
 }

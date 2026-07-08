@@ -28,6 +28,7 @@ import (
 
 // Run executes a CLI command and returns a process exit code.
 func Run(args []string, projectDir string) int {
+	defer transcription.ShutdownWorkers()
 	if len(args) == 0 {
 		printUsage(os.Stdout)
 		return 0

@@ -2,39 +2,31 @@
 package transcription
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ai-video-dubber/ai-video-dubber-go/internal/executil"
 	"github.com/ai-video-dubber/ai-video-dubber-go/internal/srt"
 )
 
-const whisperScript = `
+const whisperWorkerScript = `
 import json
 import sys
+import traceback
 
 import whisper
 
-input_path, model_name, language, output_json = sys.argv[1:5]
+model_name = sys.argv[1]
 model = whisper.load_model(model_name)
-result = model.transcribe(
-    input_path,
-    language=language,
-    task="transcribe",
-    verbose=False,
-    temperature=0.0,
-    condition_on_previous_text=False,
-    logprob_threshold=-0.8,
-    no_speech_threshold=0.5,
-    hallucination_silence_threshold=2.0,
-    word_timestamps=True,
-    fp16=False,
-)
 
 def make_safe(value):
     if isinstance(value, dict):
@@ -48,8 +40,29 @@ def make_safe(value):
             pass
     return value
 
-with open(output_json, "w", encoding="utf-8") as handle:
-    json.dump(make_safe(result), handle, ensure_ascii=False, indent=2)
+print(json.dumps({"ready": True}), flush=True)
+
+for line in sys.stdin:
+    try:
+        request = json.loads(line)
+        result = model.transcribe(
+            request["input_path"],
+            language=request["language"],
+            task="transcribe",
+            verbose=False,
+            temperature=0.0,
+            condition_on_previous_text=False,
+            logprob_threshold=-0.8,
+            no_speech_threshold=0.5,
+            hallucination_silence_threshold=2.0,
+            word_timestamps=True,
+            fp16=False,
+        )
+        with open(request["output_json"], "w", encoding="utf-8") as handle:
+            json.dump(make_safe(result), handle, ensure_ascii=False, indent=2)
+        print(json.dumps({"ok": True}), flush=True)
+    except Exception as exc:
+        print(json.dumps({"error": str(exc), "traceback": traceback.format_exc()}), flush=True)
 `
 
 type whisperResult struct {
@@ -79,6 +92,24 @@ type OutputPaths struct {
 	Text     string
 }
 
+type whisperRequest struct {
+	InputPath  string `json:"input_path"`
+	Language   string `json:"language"`
+	OutputJSON string `json:"output_json"`
+}
+
+type whisperWorkerResponse struct {
+	Ready bool   `json:"ready"`
+	OK    bool   `json:"ok"`
+	Error string `json:"error"`
+	Trace string `json:"traceback"`
+}
+
+var defaultWorkerPool = newWhisperWorkerPool()
+
+// ShutdownWorkers stops long-lived Whisper workers started by Run.
+func ShutdownWorkers() { defaultWorkerPool.shutdown() }
+
 // Run transcribes audio locally and writes SRT, segments, JSON, and plain text.
 func Run(
 	ctx context.Context,
@@ -105,11 +136,14 @@ func Run(
 	}
 	defer os.Remove(tempPath)
 
-	args := []string{"-c", whisperScript, inputPath, model, sourceLanguage, tempPath}
 	if runner.Log != nil {
 		runner.Log(fmt.Sprintf("Loading Whisper model %s (first use may download several GB)...", model))
 	}
-	if err := runner.Run(ctx, pythonExe, args, executil.Options{}); err != nil {
+	if err := defaultWorkerPool.transcribe(ctx, runner, pythonExe, model, whisperRequest{
+		InputPath:  inputPath,
+		Language:   sourceLanguage,
+		OutputJSON: tempPath,
+	}); err != nil {
 		return fmt.Errorf("Whisper transcription: %w", err)
 	}
 
@@ -139,6 +173,264 @@ func Run(
 		return fmt.Errorf("save Whisper JSON: %w", err)
 	}
 	return nil
+}
+
+type whisperWorkerPool struct {
+	mu      sync.Mutex
+	workers map[string]*whisperWorker
+}
+
+func newWhisperWorkerPool() *whisperWorkerPool {
+	return &whisperWorkerPool{workers: make(map[string]*whisperWorker)}
+}
+
+func (p *whisperWorkerPool) transcribe(ctx context.Context, runner executil.Runner, pythonExe, model string, request whisperRequest) error {
+	key := whisperWorkerKey(pythonExe, model, runner.Env)
+	worker, err := p.worker(ctx, runner, pythonExe, model, key)
+	if err != nil {
+		return err
+	}
+	if err := worker.transcribe(ctx, request); err != nil {
+		p.remove(key, worker)
+		worker.Close()
+		return err
+	}
+	return nil
+}
+
+func (p *whisperWorkerPool) worker(ctx context.Context, runner executil.Runner, pythonExe, model, key string) (*whisperWorker, error) {
+	p.mu.Lock()
+	worker := p.workers[key]
+	if worker != nil && worker.exited() {
+		delete(p.workers, key)
+		worker = nil
+	}
+	p.mu.Unlock()
+	if worker != nil {
+		return worker, nil
+	}
+
+	worker, err := startWhisperWorker(ctx, runner, pythonExe, model)
+	if err != nil {
+		return nil, err
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if existing := p.workers[key]; existing != nil {
+		worker.Close()
+		return existing, nil
+	}
+	p.workers[key] = worker
+	return worker, nil
+}
+
+func (p *whisperWorkerPool) remove(key string, worker *whisperWorker) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.workers[key] == worker {
+		delete(p.workers, key)
+	}
+}
+
+func (p *whisperWorkerPool) shutdown() {
+	p.mu.Lock()
+	workers := make([]*whisperWorker, 0, len(p.workers))
+	for _, worker := range p.workers {
+		workers = append(workers, worker)
+	}
+	p.workers = make(map[string]*whisperWorker)
+	p.mu.Unlock()
+
+	for _, worker := range workers {
+		worker.Close()
+	}
+}
+
+func whisperWorkerKey(pythonExe, model string, env []string) string {
+	return strings.Join(append([]string{pythonExe, model}, env...), "\x00")
+}
+
+type whisperWorker struct {
+	mu        sync.Mutex
+	cmd       *exec.Cmd
+	stdin     io.WriteCloser
+	responses chan whisperWorkerResponse
+	done      chan struct{}
+	waitMu    sync.Mutex
+	waitErr   error
+	log       executil.LogFunc
+	closeOnce sync.Once
+}
+
+func startWhisperWorker(ctx context.Context, runner executil.Runner, pythonExe, model string) (*whisperWorker, error) {
+	cmd := exec.Command(pythonExe, "-u", "-c", whisperWorkerScript, model)
+	executil.ConfigureProcess(cmd)
+	if len(runner.Env) > 0 {
+		cmd.Env = append(os.Environ(), runner.Env...)
+	}
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, err
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return nil, err
+	}
+	worker := &whisperWorker{
+		cmd:       cmd,
+		stdin:     stdin,
+		responses: make(chan whisperWorkerResponse),
+		done:      make(chan struct{}),
+		log:       runner.Log,
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	go worker.readResponses(stdout)
+	go worker.readLogs(stderr)
+	go worker.wait()
+
+	for {
+		select {
+		case response, ok := <-worker.responses:
+			if !ok {
+				worker.Close()
+				return nil, fmt.Errorf("Whisper worker exited before reporting readiness")
+			}
+			if response.Error != "" {
+				worker.Close()
+				return nil, workerResponseError(response)
+			}
+			if response.Ready {
+				return worker, nil
+			}
+		case <-worker.done:
+			worker.Close()
+			if err := worker.waitError(); err != nil {
+				return nil, fmt.Errorf("Whisper worker exited before readiness: %w", err)
+			}
+			return nil, fmt.Errorf("Whisper worker exited before readiness")
+		case <-ctx.Done():
+			worker.Close()
+			return nil, ctx.Err()
+		}
+	}
+}
+
+func (w *whisperWorker) wait() {
+	err := w.cmd.Wait()
+	w.waitMu.Lock()
+	w.waitErr = err
+	w.waitMu.Unlock()
+	close(w.done)
+}
+
+func (w *whisperWorker) waitError() error {
+	w.waitMu.Lock()
+	defer w.waitMu.Unlock()
+	return w.waitErr
+}
+
+func (w *whisperWorker) exited() bool {
+	select {
+	case <-w.done:
+		return true
+	default:
+		return false
+	}
+}
+
+func (w *whisperWorker) readResponses(stdout io.Reader) {
+	scanner := bufio.NewScanner(stdout)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		var response whisperWorkerResponse
+		if err := json.Unmarshal([]byte(line), &response); err != nil {
+			if w.log != nil {
+				w.log("Whisper worker: " + line)
+			}
+			continue
+		}
+		w.responses <- response
+	}
+	if err := scanner.Err(); err != nil && w.log != nil {
+		w.log("Whisper worker stdout: " + err.Error())
+	}
+	close(w.responses)
+}
+
+func (w *whisperWorker) readLogs(stderr io.Reader) {
+	scanner := bufio.NewScanner(stderr)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line != "" && w.log != nil {
+			w.log("Whisper worker: " + line)
+		}
+	}
+}
+
+func (w *whisperWorker) transcribe(ctx context.Context, request whisperRequest) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	payload, err := json.Marshal(request)
+	if err != nil {
+		return err
+	}
+	if _, err := w.stdin.Write(append(payload, '\n')); err != nil {
+		return fmt.Errorf("send Whisper request: %w", err)
+	}
+
+	for {
+		select {
+		case response, ok := <-w.responses:
+			if !ok {
+				return fmt.Errorf("Whisper worker exited")
+			}
+			if response.Error != "" {
+				return workerResponseError(response)
+			}
+			if response.OK {
+				return nil
+			}
+		case <-w.done:
+			if err := w.waitError(); err != nil {
+				return fmt.Errorf("Whisper worker exited: %w", err)
+			}
+			return fmt.Errorf("Whisper worker exited")
+		case <-ctx.Done():
+			w.Close()
+			return ctx.Err()
+		}
+	}
+}
+
+func (w *whisperWorker) Close() {
+	w.closeOnce.Do(func() {
+		if w.stdin != nil {
+			_ = w.stdin.Close()
+		}
+		executil.TerminateProcess(w.cmd)
+		select {
+		case <-w.done:
+		case <-time.After(2 * time.Second):
+		}
+	})
+}
+
+func workerResponseError(response whisperWorkerResponse) error {
+	if strings.TrimSpace(response.Trace) != "" {
+		return fmt.Errorf("%s\n%s", response.Error, strings.TrimSpace(response.Trace))
+	}
+	return fmt.Errorf("%s", response.Error)
 }
 
 func cuesFromWhisperResult(result whisperResult) []srt.Cue {
