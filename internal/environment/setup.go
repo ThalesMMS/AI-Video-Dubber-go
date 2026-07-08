@@ -13,6 +13,8 @@ import (
 	"github.com/ai-video-dubber/ai-video-dubber-go/internal/tts"
 )
 
+const defaultPIPIndexURL = "https://pypi.org/simple"
+
 // Setup creates the runtime and makes sure the requested Piper voice is available.
 func Setup(ctx context.Context, runner executil.Runner, cfg config.Config, voice string) (string, error) {
 	pythonExe, err := SetupRuntime(ctx, runner, cfg)
@@ -33,7 +35,7 @@ func SetupRuntime(ctx context.Context, runner executil.Runner, cfg config.Config
 	return setupRuntime(ctx, runner, cfg, runtimeDependencies{
 		Name:        "Whisper/Piper",
 		Verify:      verifyPythonDependencies,
-		InstallArgs: []string{"-m", "pip", "install", "--upgrade", "openai-whisper", "piper-tts"},
+		InstallArgs: pipInstallArgs("--upgrade", "openai-whisper", "piper-tts"),
 	})
 }
 
@@ -42,7 +44,7 @@ func SetupWhisperRuntime(ctx context.Context, runner executil.Runner, cfg config
 	return setupRuntime(ctx, runner, cfg, runtimeDependencies{
 		Name:        "Whisper",
 		Verify:      verifyWhisperDependency,
-		InstallArgs: []string{"-m", "pip", "install", "--upgrade", "openai-whisper"},
+		InstallArgs: pipInstallArgs("--upgrade", "openai-whisper"),
 	})
 }
 
@@ -93,7 +95,7 @@ func setupRuntime(ctx context.Context, runner executil.Runner, cfg config.Config
 		if runner.Log != nil {
 			runner.Log("Installing " + deps.Name + " dependencies (first run may take several minutes)...")
 		}
-		if err := runner.Run(ctx, pythonExe, []string{"-m", "pip", "install", "--upgrade", "pip", "wheel", "setuptools"}, executil.Options{}); err != nil {
+		if err := runner.Run(ctx, pythonExe, pipInstallArgs("--upgrade", "pip", "wheel", "setuptools"), executil.Options{}); err != nil {
 			return "", fmt.Errorf("upgrade Python packaging tools: %w", err)
 		}
 		if err := runner.Run(ctx, pythonExe, deps.InstallArgs, executil.Options{}); err != nil {
@@ -104,6 +106,11 @@ func setupRuntime(ctx context.Context, runner executil.Runner, cfg config.Config
 	}
 
 	return pythonExe, nil
+}
+
+func pipInstallArgs(args ...string) []string {
+	result := []string{"-m", "pip", "install", "--index-url", defaultPIPIndexURL}
+	return append(result, args...)
 }
 
 func verifyWhisperDependency(ctx context.Context, runner executil.Runner, pythonExe string) error {

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/ai-video-dubber/ai-video-dubber-go/internal/config"
@@ -101,6 +102,73 @@ exit 9
 	}
 	if pythonExe != python {
 		t.Fatalf("pythonExe = %q, want %q", pythonExe, python)
+	}
+}
+
+func TestSetupRuntimePinsPipIndexURL(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script test")
+	}
+	dir := t.TempDir()
+	project := filepath.Join(dir, "project")
+	python := filepath.Join(dir, "python3")
+	ffmpeg := filepath.Join(dir, "ffmpeg")
+	ffprobe := filepath.Join(dir, "ffprobe")
+	argsLog := filepath.Join(dir, "pip-args.log")
+
+	writeExecutable(t, python, `#!/bin/sh
+if [ "$1" = "-c" ] && echo "$2" | grep -q "version_info"; then
+  printf '3.12\n'
+  exit 0
+fi
+if [ "$1" = "-m" ] && [ "$2" = "venv" ]; then
+  mkdir -p "$3/bin"
+  cat > "$3/bin/python" <<'PY'
+#!/bin/sh
+if [ "$1" = "-c" ] && echo "$2" | grep -q "import whisper, piper"; then
+  exit 1
+fi
+if [ "$1" = "-m" ] && [ "$2" = "pip" ]; then
+  printf '%s\n' "$*" >> "$CAPTURE_PIP_ARGS"
+  exit 0
+fi
+printf 'unexpected venv python invocation: %s\n' "$*" >&2
+exit 9
+PY
+  chmod 755 "$3/bin/python"
+  exit 0
+fi
+printf 'unexpected python invocation: %s\n' "$*" >&2
+exit 9
+`)
+	writeExecutable(t, ffmpeg, "#!/bin/sh\nexit 0\n")
+	writeExecutable(t, ffprobe, "#!/bin/sh\nexit 0\n")
+
+	cfg := (config.Config{
+		PythonBin:  python,
+		FFmpegBin:  ffmpeg,
+		FFprobeBin: ffprobe,
+	}).Normalize(project)
+	runner := executil.Runner{
+		Tools: cfg.ToolPaths(),
+		Env:   append(cfg.RuntimeEnv(), "CAPTURE_PIP_ARGS="+argsLog),
+	}
+
+	if _, err := SetupRuntime(context.Background(), runner, cfg); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(argsLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("pip invocations = %d, want 2:\n%s", len(lines), string(data))
+	}
+	for _, line := range lines {
+		if !strings.Contains(line, "--index-url https://pypi.org/simple") {
+			t.Fatalf("pip invocation does not pin the index URL:\n%s", line)
+		}
 	}
 }
 
