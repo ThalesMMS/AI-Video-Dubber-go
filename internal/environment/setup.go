@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/ai-video-dubber/ai-video-dubber-go/internal/config"
@@ -62,7 +63,7 @@ type runtimeDependencies struct {
 
 func setupRuntime(ctx context.Context, runner executil.Runner, cfg config.Config, deps runtimeDependencies) (string, error) {
 	for _, executable := range []string{cfg.FFmpegBin, cfg.FFprobeBin, cfg.PythonBin} {
-		if err := executil.Require(executable); err != nil {
+		if err := requireRuntimeExecutable(executable); err != nil {
 			return "", err
 		}
 	}
@@ -117,6 +118,24 @@ func setupRuntime(ctx context.Context, runner executil.Runner, cfg config.Config
 func pipInstallArgs(args ...string) []string {
 	result := []string{"-m", "pip", "install", "--index-url", defaultPIPIndexURL}
 	return append(result, args...)
+}
+
+func requireRuntimeExecutable(name string) error {
+	if err := executil.Require(name); err != nil {
+		return fmt.Errorf("%w\nInstall prerequisites: %s", err, runtimeInstallHint())
+	}
+	return nil
+}
+
+func runtimeInstallHint() string {
+	switch runtime.GOOS {
+	case "darwin":
+		return "xcode-select --install && brew install go python ffmpeg"
+	case "windows":
+		return "choco install golang python ffmpeg -y, then confirm go, python, ffmpeg, and ffprobe are in PATH"
+	default:
+		return "sudo apt install -y golang python3 python3-venv ffmpeg gcc libgl1-mesa-dev xorg-dev"
+	}
 }
 
 func verifyWhisperDependency(ctx context.Context, runner executil.Runner, pythonExe string) error {

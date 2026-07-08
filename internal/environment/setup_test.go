@@ -178,6 +178,25 @@ exit 9
 	}
 }
 
+func TestSetupRuntimeMissingExecutableIncludesInstallHint(t *testing.T) {
+	cfg := config.Config{
+		FFmpegBin:  "ai-video-dubber-missing-ffmpeg",
+		FFprobeBin: "ffprobe",
+		PythonBin:  "python3",
+	}
+
+	_, err := SetupRuntime(context.Background(), executil.Runner{}, cfg)
+	if err == nil {
+		t.Fatal("SetupRuntime succeeded, want missing executable error")
+	}
+	if !strings.Contains(err.Error(), "ai-video-dubber-missing-ffmpeg") {
+		t.Fatalf("error missing executable name: %v", err)
+	}
+	if !strings.Contains(err.Error(), "Install prerequisites") {
+		t.Fatalf("error missing install hint: %v", err)
+	}
+}
+
 func writeExecutable(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
