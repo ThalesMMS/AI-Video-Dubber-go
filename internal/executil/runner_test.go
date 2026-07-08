@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 )
 
@@ -222,5 +223,99 @@ func TestRunCancellationPreservesProcessWaitError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "process wait after cancellation") {
 		t.Fatalf("display error = %v, want preserved wait error", err)
+	}
+}
+
+func TestRunCancellationDoesNotWaitForDetachedGrandchildOutput(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script test")
+	}
+	tool, env := writeDetachedGrandchildTool(t, t.TempDir())
+	err := runAndCancelAfterReady(t, env[0], func(ctx context.Context) error {
+		return (Runner{}).Run(ctx, tool, nil, Options{Env: env})
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run cancellation error = %v, want context.Canceled", err)
+	}
+}
+
+func TestOutputCancellationDoesNotWaitForDetachedGrandchildOutput(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script test")
+	}
+	tool, env := writeDetachedGrandchildTool(t, t.TempDir())
+	err := runAndCancelAfterReady(t, env[0], func(ctx context.Context) error {
+		_, err := (Runner{}).Output(ctx, tool, nil, Options{Env: env})
+		return err
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Output cancellation error = %v, want context.Canceled", err)
+	}
+}
+
+func writeDetachedGrandchildTool(t *testing.T, dir string) (string, []string) {
+	t.Helper()
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 is required for detached-grandchild cancellation test")
+	}
+	readyFile := filepath.Join(dir, "ready")
+	tool := filepath.Join(dir, "detached-grandchild")
+	if err := os.WriteFile(tool, []byte(`#!/bin/sh
+"$PYTHON3" - <<'PY'
+import os
+import time
+
+pid = os.fork()
+if pid == 0:
+    os.setsid()
+    if os.fork() == 0:
+        time.sleep(2)
+    os._exit(0)
+PY
+printf ready > "$READY_FILE"
+printf 'ready\n'
+while true; do sleep 1; done
+`), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return tool, []string{"READY_FILE=" + readyFile, "PYTHON3=" + python}
+}
+
+func runAndCancelAfterReady(t *testing.T, readyEnv string, run func(context.Context) error) error {
+	t.Helper()
+	readyFile := strings.TrimPrefix(readyEnv, "READY_FILE=")
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	started := time.Now()
+	go func() { done <- run(ctx) }()
+	waitForFile(t, readyFile)
+	cancel()
+	select {
+	case err := <-done:
+		if elapsed := time.Since(started); elapsed > time.Second {
+			t.Fatalf("cancellation returned after %s, want under 1s", elapsed)
+		}
+		return err
+	case <-time.After(time.Second):
+		t.Fatalf("cancellation did not return within 1s")
+		return nil
+	}
+}
+
+func waitForFile(t *testing.T, path string) {
+	t.Helper()
+	deadline := time.After(2 * time.Second)
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-deadline:
+			t.Fatalf("timed out waiting for %s", path)
+		case <-ticker.C:
+			if _, err := os.Stat(path); err == nil {
+				return
+			}
+		}
 	}
 }

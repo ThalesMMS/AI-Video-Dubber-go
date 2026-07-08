@@ -11,7 +11,12 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"time"
 )
+
+const canceledProcessWaitTimeout = 500 * time.Millisecond
+
+var errProcessWaitTimeout = errors.New("process wait timed out after cancellation")
 
 // LogFunc receives one complete output line.
 type LogFunc func(string)
@@ -71,12 +76,16 @@ func (r Runner) Run(ctx context.Context, name string, args []string, options Opt
 	cmd.Stdin = options.Stdin
 
 	writer := newLineWriter(r.Log, options.Quiet, options.ErrorTail)
-	cmd.Stdout = writer
-	cmd.Stderr = writer
+	outputPipe, attachErr := attachCombinedOutput(cmd, writer)
+	if attachErr != nil {
+		return attachErr
+	}
 
 	if err := cmd.Start(); err != nil {
+		outputPipe.Close()
 		return &CommandError{Name: commandName, Err: err}
 	}
+	outputPipe.StartCopy()
 
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
@@ -86,7 +95,11 @@ func (r Runner) Run(ctx context.Context, name string, args []string, options Opt
 	case err = <-done:
 	case <-ctx.Done():
 		terminateProcess(cmd)
-		err = cancellationError(ctx.Err(), <-done)
+		outputPipe.CloseReader()
+		err = cancellationError(ctx.Err(), waitAfterCancellation(done))
+	}
+	if copyErr := outputPipe.Wait(); err == nil && copyErr != nil {
+		err = fmt.Errorf("capture command output: %w", copyErr)
 	}
 	writer.Flush()
 	if err != nil {
@@ -111,12 +124,16 @@ func (r Runner) Output(ctx context.Context, name string, args []string, options 
 		cmd.Env = env
 	}
 	cmd.Stdin = options.Stdin
-	cmd.Stdout = &buffer
-	cmd.Stderr = &buffer
+	outputPipe, attachErr := attachCombinedOutput(cmd, &buffer)
+	if attachErr != nil {
+		return "", attachErr
+	}
 
 	if err := cmd.Start(); err != nil {
+		outputPipe.Close()
 		return "", &CommandError{Name: commandName, Err: err}
 	}
+	outputPipe.StartCopy()
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
 
@@ -125,12 +142,86 @@ func (r Runner) Output(ctx context.Context, name string, args []string, options 
 	case err = <-done:
 	case <-ctx.Done():
 		terminateProcess(cmd)
-		err = cancellationError(ctx.Err(), <-done)
+		outputPipe.CloseReader()
+		err = cancellationError(ctx.Err(), waitAfterCancellation(done))
+	}
+	if copyErr := outputPipe.Wait(); err == nil && copyErr != nil {
+		err = fmt.Errorf("capture command output: %w", copyErr)
 	}
 	if err != nil {
 		return buffer.String(), &CommandError{Name: commandName, Err: err, Output: RedactSecrets(buffer.String())}
 	}
 	return buffer.String(), nil
+}
+
+type combinedOutputPipe struct {
+	reader      *os.File
+	writer      *os.File
+	destination io.Writer
+	done        chan error
+}
+
+func attachCombinedOutput(cmd *exec.Cmd, destination io.Writer) (*combinedOutputPipe, error) {
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		return nil, fmt.Errorf("create command output pipe: %w", err)
+	}
+	cmd.Stdout = writer
+	cmd.Stderr = writer
+	return &combinedOutputPipe{
+		reader:      reader,
+		writer:      writer,
+		destination: destination,
+		done:        make(chan error, 1),
+	}, nil
+}
+
+func (p *combinedOutputPipe) StartCopy() {
+	_ = p.writer.Close()
+	go func() {
+		_, err := io.Copy(p.destination, p.reader)
+		if errors.Is(err, os.ErrClosed) {
+			err = nil
+		}
+		_ = p.reader.Close()
+		p.done <- err
+	}()
+}
+
+func (p *combinedOutputPipe) CloseReader() {
+	if p != nil && p.reader != nil {
+		_ = p.reader.Close()
+	}
+}
+
+func (p *combinedOutputPipe) Close() {
+	if p == nil {
+		return
+	}
+	if p.writer != nil {
+		_ = p.writer.Close()
+	}
+	if p.reader != nil {
+		_ = p.reader.Close()
+	}
+}
+
+func (p *combinedOutputPipe) Wait() error {
+	if p == nil || p.done == nil {
+		return nil
+	}
+	return <-p.done
+}
+
+func waitAfterCancellation(done <-chan error) error {
+	timer := time.NewTimer(canceledProcessWaitTimeout)
+	defer timer.Stop()
+	select {
+	case err := <-done:
+		return err
+	case <-timer.C:
+		return errProcessWaitTimeout
+	}
 }
 
 func cancellationError(ctxErr, waitErr error) error {
