@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/ai-video-dubber/ai-video-dubber-go/internal/audio"
 	"github.com/ai-video-dubber/ai-video-dubber-go/internal/config"
@@ -105,12 +106,14 @@ type Pipeline struct {
 	ProjectDir string
 	Observer   Observer
 	stepLabels []string
+	observerMu *sync.Mutex
 }
 
 // Run executes the complete local pipeline.
 func (p Pipeline) Run(ctx context.Context, rawConfig config.Config) (Result, error) {
 	cfg := rawConfig.Normalize(p.ProjectDir)
 	p.stepLabels = StepLabelsForModeOptions(cfg.Mode, cfg.SubtitleBurnIn)
+	p.observerMu = &sync.Mutex{}
 	lang, err := language.ByCode(cfg.LanguageCode)
 	if err != nil {
 		return Result{}, err
@@ -145,9 +148,14 @@ func (p Pipeline) Run(ctx context.Context, rawConfig config.Config) (Result, err
 	p.log("  Output:   " + paths.FinalVideo)
 	p.log("")
 
-	current := StepSetup
 	fail := func(step Step, err error) (Result, error) {
 		p.step(step, StateError)
+		if errors.Is(err, context.Canceled) {
+			return resultForPaths(paths), err
+		}
+		return resultForPaths(paths), fmt.Errorf("%s: %w", p.stepLabel(step), err)
+	}
+	failStarted := func(step Step, err error) (Result, error) {
 		if errors.Is(err, context.Canceled) {
 			return resultForPaths(paths), err
 		}
@@ -168,38 +176,16 @@ func (p Pipeline) Run(ctx context.Context, rawConfig config.Config) (Result, err
 		translationModel = model
 	}
 
-	p.begin(current)
-	var pythonExe string
-	if cfg.Mode == config.ModeDub {
-		pythonExe, err = environment.Setup(ctx, runner, cfg, lang.Voice)
-		if err != nil {
-			return fail(current, err)
-		}
-	} else {
-		pythonExe, err = environment.SetupWhisperRuntime(ctx, runner, cfg)
-		if err != nil {
-			return fail(current, err)
-		}
-		p.log("Environment ready.")
-	}
-	p.finish(current)
-
-	current = StepExtract
-	p.begin(current)
 	runStep, err := shouldRun(cfg.Force, paths.ExtractedAudio)
 	if err != nil {
-		return fail(current, err)
+		return fail(StepExtract, err)
 	}
-	if runStep {
-		if err := audio.ExtractMP3(ctx, runner, paths.Input, paths.ExtractedAudio); err != nil {
-			return fail(current, err)
-		}
-	} else {
-		p.log("Skipped: extracted audio already exists. Use --force to regenerate it.")
+	pythonExe, failedStep, err := p.runSetupAndExtract(ctx, runner, cfg, lang, paths, runStep)
+	if err != nil {
+		return failStarted(failedStep, err)
 	}
-	p.finish(current)
 
-	current = StepTranscribe
+	current := StepTranscribe
 	p.begin(current)
 	runStep, err = shouldRun(cfg.Force, paths.TranscriptSRT)
 	if err != nil {
@@ -301,6 +287,81 @@ func resultForPaths(paths audio.Paths) Result {
 	return Result{Paths: paths, OutputVideo: paths.FinalVideo, SubtitleSRT: paths.TranslatedSRT}
 }
 
+type startupStepResult struct {
+	step      Step
+	pythonExe string
+	err       error
+}
+
+func (p Pipeline) runSetupAndExtract(ctx context.Context, runner executil.Runner, cfg config.Config, lang language.Language, paths audio.Paths, extractWillRun bool) (string, Step, error) {
+	if !extractWillRun {
+		p.begin(StepSetup)
+		pythonExe, err := p.setupEnvironment(ctx, runner, cfg, lang)
+		if err != nil {
+			p.step(StepSetup, StateError)
+			return "", StepSetup, err
+		}
+		p.finish(StepSetup)
+
+		p.begin(StepExtract)
+		p.log("Skipped: extracted audio already exists. Use --force to regenerate it.")
+		p.finish(StepExtract)
+		return pythonExe, StepSetup, nil
+	}
+
+	p.begin(StepSetup)
+	p.begin(StepExtract)
+
+	stepCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	results := make(chan startupStepResult, 2)
+	go func() {
+		pythonExe, err := p.setupEnvironment(stepCtx, runner, cfg, lang)
+		results <- startupStepResult{step: StepSetup, pythonExe: pythonExe, err: err}
+	}()
+	go func() {
+		err := audio.ExtractMP3(stepCtx, runner, paths.Input, paths.ExtractedAudio)
+		results <- startupStepResult{step: StepExtract, err: err}
+	}()
+
+	var pythonExe string
+	var firstStep Step
+	var firstErr error
+	for i := 0; i < 2; i++ {
+		result := <-results
+		if result.err != nil {
+			p.step(result.step, StateError)
+			if firstErr == nil {
+				firstStep = result.step
+				firstErr = result.err
+				cancel()
+			}
+			continue
+		}
+		if result.pythonExe != "" {
+			pythonExe = result.pythonExe
+		}
+		p.finish(result.step)
+	}
+	if firstErr != nil {
+		return "", firstStep, firstErr
+	}
+	return pythonExe, StepSetup, nil
+}
+
+func (p Pipeline) setupEnvironment(ctx context.Context, runner executil.Runner, cfg config.Config, lang language.Language) (string, error) {
+	if cfg.Mode == config.ModeDub {
+		return environment.Setup(ctx, runner, cfg, lang.Voice)
+	}
+	pythonExe, err := environment.SetupWhisperRuntime(ctx, runner, cfg)
+	if err != nil {
+		return "", err
+	}
+	p.log("Environment ready.")
+	return pythonExe, nil
+}
+
 func shouldRun(force bool, path string) (bool, error) {
 	if force {
 		return true, nil
@@ -330,12 +391,20 @@ func (p Pipeline) finish(step Step) { p.step(step, StateDone) }
 
 func (p Pipeline) log(line string) {
 	if p.Observer != nil {
+		if p.observerMu != nil {
+			p.observerMu.Lock()
+			defer p.observerMu.Unlock()
+		}
 		p.Observer.OnLog(line)
 	}
 }
 
 func (p Pipeline) step(step Step, state State) {
 	if p.Observer != nil {
+		if p.observerMu != nil {
+			p.observerMu.Lock()
+			defer p.observerMu.Unlock()
+		}
 		p.Observer.OnStep(step, state)
 	}
 }

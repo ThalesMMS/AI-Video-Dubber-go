@@ -253,3 +253,104 @@ exit 1
 		t.Fatalf("final skip log missing:\n%s", joined)
 	}
 }
+
+func TestRunStartsSetupAndAudioExtractionConcurrently(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script test")
+	}
+	dir := t.TempDir()
+	setupStarted := filepath.Join(dir, "setup-started")
+	extractStarted := filepath.Join(dir, "extract-started")
+	t.Setenv("SETUP_STARTED", setupStarted)
+	t.Setenv("EXTRACT_STARTED", extractStarted)
+
+	pythonScript := `#!/bin/sh
+if [ "$1" = "-c" ]; then
+  case "$2" in
+    *version_info*)
+      printf started > "$SETUP_STARTED"
+      i=0
+      while [ ! -f "$EXTRACT_STARTED" ] && [ "$i" -lt 50 ]; do
+        sleep 0.02
+        i=$((i + 1))
+      done
+      if [ ! -f "$EXTRACT_STARTED" ]; then
+        printf 'audio extraction did not overlap setup\n' >&2
+        exit 42
+      fi
+      printf '3.11\n'
+      exit 0
+      ;;
+    *"import whisper"*)
+      exit 0
+      ;;
+  esac
+fi
+exit 0
+`
+	python := filepath.Join(dir, "python")
+	if err := os.WriteFile(python, []byte(pythonScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	venvDir := filepath.Join(dir, "venv")
+	venvPython := config.VenvPython(venvDir)
+	if err := os.MkdirAll(filepath.Dir(venvPython), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(venvPython, []byte(pythonScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	ffmpeg := filepath.Join(dir, "ffmpeg")
+	if err := os.WriteFile(ffmpeg, []byte(`#!/bin/sh
+printf started > "$EXTRACT_STARTED"
+last=
+for arg do
+  last="$arg"
+done
+printf audio > "$last"
+exit 0
+`), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ffprobe := filepath.Join(dir, "ffprobe")
+	if err := os.WriteFile(ffprobe, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	input := filepath.Join(dir, "video.mp4")
+	if err := os.WriteFile(input, []byte("video"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	paths, err := audio.BuildPathsForMode(input, "pt-BR", "", config.ModeSubtitle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for path, data := range map[string]string{
+		paths.TranscriptSRT: "1\n00:00:00,000 --> 00:00:01,000\nOne\n",
+		paths.TranslatedSRT: "1\n00:00:00,000 --> 00:00:01,000\nUm\n",
+		paths.FinalVideo:    "existing final video",
+	} {
+		if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	_, err = (Pipeline{ProjectDir: dir}).Run(context.Background(), config.Config{
+		Mode:         config.ModeSubtitle,
+		InputPath:    input,
+		LanguageCode: "pt-BR",
+		APIBase:      "http://127.0.0.1:1",
+		PythonBin:    python,
+		VenvDir:      venvDir,
+		FFmpegBin:    ffmpeg,
+		FFprobeBin:   ffprobe,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{setupStarted, extractStarted, paths.ExtractedAudio} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("expected %s to exist: %v", path, err)
+		}
+	}
+}
