@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/ai-video-dubber/ai-video-dubber-go/internal/atomicfile"
 )
 
 var (
@@ -290,22 +292,8 @@ func atomicWrite(path string, data []byte, mode os.FileMode) error {
 	if err := temp.Close(); err != nil {
 		return fmt.Errorf("close temporary file: %w", err)
 	}
-	if err := replaceFile(tempName, path); err != nil {
+	if err := atomicfile.Replace(tempName, path); err != nil {
 		return fmt.Errorf("replace %q: %w", path, err)
 	}
 	return nil
-}
-
-func replaceFile(source, destination string) error {
-	if err := os.Rename(source, destination); err == nil {
-		return nil
-	} else if _, statErr := os.Stat(destination); statErr != nil {
-		return err
-	}
-	// Windows does not replace an existing destination with os.Rename. The
-	// fallback is not fully atomic, but it keeps cross-platform behavior sane.
-	if err := os.Remove(destination); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	return os.Rename(source, destination)
 }

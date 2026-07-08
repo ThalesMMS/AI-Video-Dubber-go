@@ -21,6 +21,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/ai-video-dubber/ai-video-dubber-go/internal/atomicfile"
 	"github.com/ai-video-dubber/ai-video-dubber-go/internal/audio"
 	"github.com/ai-video-dubber/ai-video-dubber-go/internal/executil"
 	"github.com/ai-video-dubber/ai-video-dubber-go/internal/srt"
@@ -1131,22 +1132,10 @@ func writeReport(path string, reports []GroupReport) error {
 	if err := temp.Close(); err != nil {
 		return fmt.Errorf("close TTS report: %w", err)
 	}
-	if err := replaceFile(name, path); err != nil {
+	if err := atomicfile.Replace(name, path); err != nil {
 		return fmt.Errorf("replace TTS report: %w", err)
 	}
 	return nil
-}
-
-func replaceFile(source, destination string) error {
-	if err := os.Rename(source, destination); err == nil {
-		return nil
-	} else if _, statErr := os.Stat(destination); statErr != nil {
-		return err
-	}
-	if err := os.Remove(destination); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	return os.Rename(source, destination)
 }
 
 func formatDuration(value time.Duration) string {

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ai-video-dubber/ai-video-dubber-go/internal/atomicfile"
 	"github.com/ai-video-dubber/ai-video-dubber-go/internal/executil"
 )
 
@@ -295,7 +296,7 @@ func atomicMediaOutput(destination string, render func(string) error) error {
 	if err := os.Chmod(tempName, privateOutputFileMode); err != nil {
 		return fmt.Errorf("set rendered media permissions: %w", err)
 	}
-	if err := replaceOutputFile(tempName, destination); err != nil {
+	if err := atomicfile.Replace(tempName, destination); err != nil {
 		return fmt.Errorf("replace output %q: %w", destination, err)
 	}
 	return nil
@@ -334,20 +335,8 @@ func copyFileAtomic(source, destination string) error {
 	if err := temp.Close(); err != nil {
 		return fmt.Errorf("close temporary output: %w", err)
 	}
-	if err := replaceOutputFile(tempName, destination); err != nil {
+	if err := atomicfile.Replace(tempName, destination); err != nil {
 		return fmt.Errorf("replace output %q: %w", destination, err)
 	}
 	return nil
-}
-
-func replaceOutputFile(source, destination string) error {
-	if err := os.Rename(source, destination); err == nil {
-		return nil
-	} else if _, statErr := os.Stat(destination); statErr != nil {
-		return err
-	}
-	if err := os.Remove(destination); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	return os.Rename(source, destination)
 }

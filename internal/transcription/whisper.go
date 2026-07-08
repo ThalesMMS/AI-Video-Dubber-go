@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ai-video-dubber/ai-video-dubber-go/internal/atomicfile"
 	"github.com/ai-video-dubber/ai-video-dubber-go/internal/executil"
 	"github.com/ai-video-dubber/ai-video-dubber-go/internal/srt"
 )
@@ -458,15 +459,5 @@ func atomicReplace(source, destination string) error {
 	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
 		return err
 	}
-	// os.Rename replaces atomically on Unix. Windows requires removing an
-	// existing destination first, so use a conservative cross-platform fallback.
-	if err := os.Rename(source, destination); err == nil {
-		return nil
-	} else if _, statErr := os.Stat(destination); statErr != nil {
-		return err
-	}
-	if err := os.Remove(destination); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	return os.Rename(source, destination)
+	return atomicfile.Replace(source, destination)
 }
