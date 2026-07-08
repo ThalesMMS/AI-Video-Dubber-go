@@ -117,3 +117,59 @@ func TestLineWriterFlushesCarriageReturnProgress(t *testing.T) {
 		}
 	}
 }
+
+func TestCancellationErrorPreservesContextAndWaitError(t *testing.T) {
+	waitErr := errors.New("exit status 7")
+
+	err := cancellationError(context.Canceled, waitErr)
+
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+	if !strings.Contains(err.Error(), "exit status 7") {
+		t.Fatalf("error = %v, want wait error detail", err)
+	}
+}
+
+func TestRunCancellationPreservesProcessWaitError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script test")
+	}
+	dir := t.TempDir()
+	tool := filepath.Join(dir, "slow-tool")
+	if err := os.WriteFile(tool, []byte("#!/bin/sh\nprintf 'ready\\n'\nwhile true; do sleep 1; done\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	ready := make(chan struct{})
+	var readyClosed bool
+	runner := Runner{Log: func(line string) {
+		if line == "ready" && !readyClosed {
+			readyClosed = true
+			close(ready)
+		}
+	}}
+	done := make(chan error, 1)
+	go func() { done <- runner.Run(ctx, tool, nil, Options{}) }()
+
+	<-ready
+	cancel()
+	err := <-done
+	if err == nil {
+		t.Fatal("Run succeeded after cancellation")
+	}
+	var commandErr *CommandError
+	if !errors.As(err, &commandErr) {
+		t.Fatalf("error type = %T, want *CommandError", err)
+	}
+	if !errors.Is(commandErr.Err, context.Canceled) {
+		t.Fatalf("command error = %v, want context.Canceled", commandErr.Err)
+	}
+	if !strings.Contains(commandErr.Err.Error(), "process wait after cancellation") {
+		t.Fatalf("command error = %v, want preserved wait error", commandErr.Err)
+	}
+	if !strings.Contains(err.Error(), "process wait after cancellation") {
+		t.Fatalf("display error = %v, want preserved wait error", err)
+	}
+}

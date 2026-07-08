@@ -35,7 +35,6 @@ type Options struct {
 // CommandError includes the executable, exit status, and recent output.
 type CommandError struct {
 	Name   string
-	Args   []string
 	Err    error
 	Output string
 }
@@ -45,7 +44,8 @@ func (e *CommandError) Error() string {
 	var exitErr *exec.ExitError
 	if errors.As(e.Err, &exitErr) {
 		message += fmt.Sprintf(" (exit code %d)", exitErr.ExitCode())
-	} else if e.Err != nil {
+	}
+	if e.Err != nil {
 		message += ": " + e.Err.Error()
 	}
 	if strings.TrimSpace(e.Output) != "" {
@@ -75,7 +75,7 @@ func (r Runner) Run(ctx context.Context, name string, args []string, options Opt
 	cmd.Stderr = writer
 
 	if err := cmd.Start(); err != nil {
-		return &CommandError{Name: commandName, Args: append([]string(nil), args...), Err: err}
+		return &CommandError{Name: commandName, Err: err}
 	}
 
 	done := make(chan error, 1)
@@ -86,14 +86,12 @@ func (r Runner) Run(ctx context.Context, name string, args []string, options Opt
 	case err = <-done:
 	case <-ctx.Done():
 		terminateProcess(cmd)
-		<-done
-		err = ctx.Err()
+		err = cancellationError(ctx.Err(), <-done)
 	}
 	writer.Flush()
 	if err != nil {
 		return &CommandError{
 			Name:   commandName,
-			Args:   append([]string(nil), args...),
 			Err:    err,
 			Output: writer.Tail(),
 		}
@@ -117,7 +115,7 @@ func (r Runner) Output(ctx context.Context, name string, args []string, options 
 	cmd.Stderr = &buffer
 
 	if err := cmd.Start(); err != nil {
-		return "", &CommandError{Name: commandName, Args: append([]string(nil), args...), Err: err}
+		return "", &CommandError{Name: commandName, Err: err}
 	}
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
@@ -127,13 +125,22 @@ func (r Runner) Output(ctx context.Context, name string, args []string, options 
 	case err = <-done:
 	case <-ctx.Done():
 		terminateProcess(cmd)
-		<-done
-		err = ctx.Err()
+		err = cancellationError(ctx.Err(), <-done)
 	}
 	if err != nil {
-		return buffer.String(), &CommandError{Name: commandName, Args: append([]string(nil), args...), Err: err, Output: RedactSecrets(buffer.String())}
+		return buffer.String(), &CommandError{Name: commandName, Err: err, Output: RedactSecrets(buffer.String())}
 	}
 	return buffer.String(), nil
+}
+
+func cancellationError(ctxErr, waitErr error) error {
+	if ctxErr == nil {
+		return waitErr
+	}
+	if waitErr == nil {
+		return ctxErr
+	}
+	return fmt.Errorf("%w; process wait after cancellation: %w", ctxErr, waitErr)
 }
 
 func (r Runner) commandName(name string) string {
