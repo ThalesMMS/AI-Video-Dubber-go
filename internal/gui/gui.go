@@ -30,6 +30,7 @@ import (
 	"github.com/ai-video-dubber/ai-video-dubber-go/internal/executil"
 	"github.com/ai-video-dubber/ai-video-dubber-go/internal/language"
 	"github.com/ai-video-dubber/ai-video-dubber-go/internal/pipeline"
+	"github.com/ai-video-dubber/ai-video-dubber-go/internal/translation"
 )
 
 const (
@@ -282,9 +283,8 @@ func (u *ui) startPipeline() {
 		return
 	}
 	apiBase := strings.TrimSpace(u.apiBase.Text)
-	parsedURL, err := url.Parse(apiBase)
-	if err != nil || !parsedURL.IsAbs() || parsedURL.Opaque != "" || (parsedURL.Scheme != "http" && parsedURL.Scheme != "https") || parsedURL.Host == "" || parsedURL.RawQuery != "" || parsedURL.Fragment != "" {
-		dialog.ShowError(fmt.Errorf("invalid API endpoint: %s", apiBase), u.window)
+	if err := validateAPIEndpoint(apiBase); err != nil {
+		dialog.ShowError(err, u.window)
 		return
 	}
 	lang, err := language.ByDisplayName(u.language.Selected)
@@ -584,6 +584,10 @@ func (u *ui) setLogActionButtons(enabled bool) {
 
 func fileURL(path string) (*url.URL, error) {
 	return url.Parse(storage.NewFileURI(path).String())
+}
+
+func validateAPIEndpoint(apiBase string) error {
+	return translation.ValidateAPIBase(apiBase)
 }
 
 // OnLog implements pipeline.Observer.

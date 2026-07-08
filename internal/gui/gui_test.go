@@ -155,6 +155,16 @@ func TestCurrentLogFolderAndFileURL(t *testing.T) {
 	}
 }
 
+func TestValidateAPIEndpointReportsSpecificProblem(t *testing.T) {
+	err := validateAPIEndpoint("http://localhost:8000/v1?token=abc")
+	if err == nil {
+		t.Fatal("validateAPIEndpoint accepted API base with query string")
+	}
+	if !strings.Contains(err.Error(), "query string or fragment") {
+		t.Fatalf("error = %q, want specific API base validation", err.Error())
+	}
+}
+
 func TestApplyRuntimeSettingsUsesSelectedWhisperModel(t *testing.T) {
 	t.Setenv("WHISPER_MODEL", "large-v3")
 	selectModel := widget.NewSelect(whisperModelOptions, nil)

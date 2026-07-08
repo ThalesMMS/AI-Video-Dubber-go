@@ -221,18 +221,18 @@ func TestClientUsesConfiguredRequestTimeout(t *testing.T) {
 
 func TestValidateAPIBase(t *testing.T) {
 	for _, base := range []string{"", "ftp://host", "http://", "http://host/path?q=x", "http://host/#fragment"} {
-		if err := validateAPIBase(base); err == nil {
-			t.Errorf("validateAPIBase(%q) unexpectedly succeeded", base)
+		if err := ValidateAPIBase(base); err == nil {
+			t.Errorf("ValidateAPIBase(%q) unexpectedly succeeded", base)
 		}
 	}
 	for _, base := range []string{"http://localhost:8000", "http://127.0.0.1:8000/v1", "http://[::1]:8000", "https://example.com/openai/v1"} {
-		if err := validateAPIBase(base); err != nil {
-			t.Errorf("validateAPIBase(%q) failed: %v", base, err)
+		if err := ValidateAPIBase(base); err != nil {
+			t.Errorf("ValidateAPIBase(%q) failed: %v", base, err)
 		}
 	}
 	for _, base := range []string{"http://example.com", "http://10.0.0.25:8000", "http://192.168.1.10/v1"} {
-		if err := validateAPIBase(base); err == nil || !strings.Contains(err.Error(), "HTTPS") {
-			t.Errorf("validateAPIBase(%q) error = %v, want HTTPS requirement", base, err)
+		if err := ValidateAPIBase(base); err == nil || !strings.Contains(err.Error(), "HTTPS") {
+			t.Errorf("ValidateAPIBase(%q) error = %v, want HTTPS requirement", base, err)
 		}
 	}
 }

@@ -144,6 +144,9 @@ func parseCompleteRunConfig(name string, args []string, mode config.Mode) (confi
 	if strings.TrimSpace(*input) == "" {
 		return config.Config{}, fmt.Errorf("--input is required")
 	}
+	if err := translation.ValidateAPIBase(*apiBase); err != nil {
+		return config.Config{}, err
+	}
 	cfg := defaults
 	cfg.Mode = mode
 	cfg.InputPath = *input

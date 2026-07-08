@@ -53,6 +53,19 @@ func TestParseCompleteRunConfigRequiresInput(t *testing.T) {
 	}
 }
 
+func TestParseCompleteRunConfigValidatesAPIBase(t *testing.T) {
+	_, err := parseCompleteRunConfig("dub", []string{
+		"--input", "video.mp4",
+		"--api-base", "http://localhost:8000/v1?token=abc",
+	}, config.ModeDub)
+	if err == nil {
+		t.Fatal("parseCompleteRunConfig accepted API base with query string")
+	}
+	if !strings.Contains(err.Error(), "query string or fragment") {
+		t.Fatalf("error = %q, want specific API base validation", err.Error())
+	}
+}
+
 func TestParseCompleteRunConfigKeepsDubTTSFlags(t *testing.T) {
 	projectDir := t.TempDir()
 	dataDir := filepath.Join(projectDir, "voices")

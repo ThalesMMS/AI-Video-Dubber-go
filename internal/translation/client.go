@@ -37,7 +37,7 @@ type Client struct {
 // Preflight checks that the translation API is reachable before local work starts.
 // It returns the configured model, or the first listed model when auto-detection is needed.
 func (c *Client) Preflight(ctx context.Context) (string, error) {
-	if err := validateAPIBase(c.APIBase); err != nil {
+	if err := ValidateAPIBase(c.APIBase); err != nil {
 		return "", err
 	}
 	models, err := c.listModels(ctx)
@@ -58,7 +58,7 @@ func (c *Client) Preflight(ctx context.Context) (string, error) {
 
 // TranslateFile translates the text of each SRT cue while preserving timing.
 func (c *Client) TranslateFile(ctx context.Context, inputPath, outputPath, targetLanguage string, batchSize int) error {
-	if err := validateAPIBase(c.APIBase); err != nil {
+	if err := ValidateAPIBase(c.APIBase); err != nil {
 		return err
 	}
 	if strings.TrimSpace(targetLanguage) == "" {
@@ -336,7 +336,8 @@ func stripCodeFence(reply string) string {
 	return strings.TrimSpace(strings.Join(lines, "\n"))
 }
 
-func validateAPIBase(base string) error {
+// ValidateAPIBase checks the shared CLI/GUI rules for OpenAI-compatible API base URLs.
+func ValidateAPIBase(base string) error {
 	base = strings.TrimSpace(base)
 	parsed, err := url.Parse(base)
 	if err != nil || !parsed.IsAbs() || parsed.Opaque != "" || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
