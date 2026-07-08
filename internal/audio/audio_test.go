@@ -131,6 +131,21 @@ func TestWriteAndConcatenateSilenceWAV(t *testing.T) {
 	}
 }
 
+func TestWAVDurationReadsPCMHeader(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "duration.wav")
+	if err := WriteSilencePCM16Mono(path, (250 * time.Millisecond).Nanoseconds(), 8000); err != nil {
+		t.Fatal(err)
+	}
+
+	duration, err := WAVDuration(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if duration != 250*time.Millisecond {
+		t.Fatalf("duration = %s, want 250ms", duration)
+	}
+}
+
 func TestCopyFileAtomicUsesPrivatePermissions(t *testing.T) {
 	dir := t.TempDir()
 	source := filepath.Join(dir, "source.wav")

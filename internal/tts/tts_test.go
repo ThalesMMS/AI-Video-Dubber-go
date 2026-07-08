@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ai-video-dubber/ai-video-dubber-go/internal/audio"
 	"github.com/ai-video-dubber/ai-video-dubber-go/internal/executil"
 	"github.com/ai-video-dubber/ai-video-dubber-go/internal/srt"
 )
@@ -201,5 +202,56 @@ exit 1
 	}
 	if count := strings.Count(string(data), "start\n"); count != 1 {
 		t.Fatalf("piper starts = %d, want one worker process; starts log:\n%s", count, string(data))
+	}
+}
+
+func TestSynthesizeAttemptsReadsWAVDurationWithoutFFprobe(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script test")
+	}
+	dir := t.TempDir()
+	template := filepath.Join(dir, "template.wav")
+	if err := audio.WriteSilencePCM16Mono(template, (1500 * time.Millisecond).Nanoseconds(), 22050); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PIPER_TEMPLATE_WAV", template)
+	python := filepath.Join(dir, "python")
+	if err := os.WriteFile(python, []byte(`#!/bin/sh
+if [ "$1" = "-u" ]; then
+  printf '{"ready":true}\n'
+  while IFS= read -r line; do
+    output=$(printf '%s\n' "$line" | sed -n 's/.*"output_path":"\([^"]*\)".*/\1/p')
+    cp "$PIPER_TEMPLATE_WAV" "$output"
+    printf '{"ok":true}\n'
+  done
+  exit 0
+fi
+exit 1
+`), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ffprobe := filepath.Join(dir, "ffprobe")
+	if err := os.WriteFile(ffprobe, []byte("#!/bin/sh\nexit 99\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	worker, err := startPiperWorker(context.Background(), executil.Runner{}, python, "voice.onnx", "voice.onnx.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer worker.Close()
+	options := Defaults()
+	options.MinLengthScale = 1
+	options.MaxLengthScale = 1
+	group := Group{ID: 1, Text: "hello", Start: 0, End: 2 * time.Second}
+
+	attempts, err := synthesizeAttempts(context.Background(), executil.Runner{Tools: map[string]string{"ffprobe": ffprobe}}, worker, group, dir, voiceConfig{SampleRate: 22050, LengthScale: 1, NoiseScale: 0.667, NoiseW: 0.8}, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(attempts) != 1 {
+		t.Fatalf("attempts = %d, want 1", len(attempts))
+	}
+	if attempts[0].Duration != 1500*time.Millisecond {
+		t.Fatalf("duration = %s, want 1.5s", attempts[0].Duration)
 	}
 }

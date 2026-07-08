@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 const wavHeaderSize = 44
@@ -116,6 +117,84 @@ func ConcatenatePCM16Mono(inputs []string, output string, sampleRate int) error 
 	}
 	closed = true
 	return nil
+}
+
+// WAVDuration returns the duration of a PCM WAV by reading its RIFF chunks.
+func WAVDuration(path string) (time.Duration, error) {
+	source, err := os.Open(path)
+	if err != nil {
+		return 0, fmt.Errorf("open WAV %q: %w", path, err)
+	}
+	defer source.Close()
+
+	header := make([]byte, 12)
+	if _, err := io.ReadFull(source, header); err != nil {
+		return 0, fmt.Errorf("read WAV header %q: %w", path, err)
+	}
+	if string(header[0:4]) != "RIFF" || string(header[8:12]) != "WAVE" {
+		return 0, fmt.Errorf("%q is not a RIFF/WAVE file", path)
+	}
+
+	var formatOK bool
+	var sampleRate int
+	var blockAlign uint16
+	var totalData uint64
+	chunkHeader := make([]byte, 8)
+	for {
+		_, err := io.ReadFull(source, chunkHeader)
+		if err == io.EOF || err == io.ErrUnexpectedEOF {
+			break
+		}
+		if err != nil {
+			return 0, fmt.Errorf("read WAV chunk header %q: %w", path, err)
+		}
+		chunkID := string(chunkHeader[0:4])
+		chunkSize := binary.LittleEndian.Uint32(chunkHeader[4:8])
+		switch chunkID {
+		case "fmt ":
+			payload := make([]byte, chunkSize)
+			if _, err := io.ReadFull(source, payload); err != nil {
+				return 0, fmt.Errorf("read WAV format %q: %w", path, err)
+			}
+			if len(payload) < 16 {
+				return 0, fmt.Errorf("invalid WAV format chunk in %q", path)
+			}
+			audioFormat := binary.LittleEndian.Uint16(payload[0:2])
+			channels := binary.LittleEndian.Uint16(payload[2:4])
+			sampleRate = int(binary.LittleEndian.Uint32(payload[4:8]))
+			blockAlign = binary.LittleEndian.Uint16(payload[12:14])
+			bitsPerSample := binary.LittleEndian.Uint16(payload[14:16])
+			if audioFormat != 1 || channels == 0 || sampleRate <= 0 || blockAlign == 0 || bitsPerSample == 0 {
+				return 0, fmt.Errorf("unsupported WAV format in %q: format=%d channels=%d sampleRate=%d blockAlign=%d bits=%d", path, audioFormat, channels, sampleRate, blockAlign, bitsPerSample)
+			}
+			formatOK = true
+		case "data":
+			if !formatOK {
+				return 0, fmt.Errorf("WAV data appeared before a supported format chunk in %q", path)
+			}
+			totalData += uint64(chunkSize)
+			if _, err := source.Seek(int64(chunkSize), io.SeekCurrent); err != nil {
+				return 0, fmt.Errorf("skip WAV data in %q: %w", path, err)
+			}
+		default:
+			if _, err := source.Seek(int64(chunkSize), io.SeekCurrent); err != nil {
+				return 0, fmt.Errorf("skip WAV chunk %q in %q: %w", chunkID, path, err)
+			}
+		}
+		if chunkSize%2 == 1 {
+			if _, err := source.Seek(1, io.SeekCurrent); err != nil {
+				return 0, fmt.Errorf("skip WAV padding in %q: %w", path, err)
+			}
+		}
+	}
+	if !formatOK || totalData == 0 {
+		return 0, fmt.Errorf("no compatible PCM data found in %q", path)
+	}
+	if totalData%uint64(blockAlign) != 0 {
+		return 0, fmt.Errorf("WAV data size is not aligned to sample frames in %q", path)
+	}
+	frames := totalData / uint64(blockAlign)
+	return time.Duration(frames * uint64(time.Second) / uint64(sampleRate)), nil
 }
 
 func appendWAVData(destination *os.File, path string, expectedSampleRate int) (uint64, error) {

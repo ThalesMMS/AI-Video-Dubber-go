@@ -860,7 +860,7 @@ func synthesizeAttempts(ctx context.Context, runner executil.Runner, piper *pipe
 		if err := piper.synthesize(ctx, group.Text, path, scale, noiseScale, noiseW, options); err != nil {
 			return nil, fmt.Errorf("Piper synthesis failed: %w", err)
 		}
-		duration, err := audio.ProbeDuration(ctx, runner, path)
+		duration, err := audio.WAVDuration(path)
 		if err != nil {
 			return nil, err
 		}
