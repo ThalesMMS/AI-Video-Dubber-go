@@ -36,6 +36,7 @@ import (
 const (
 	maxLogBytes        = 64_000
 	logRefreshInterval = 100 * time.Millisecond
+	cancelStatusEvery  = 5 * time.Second
 	guiModeDub         = "Dub"
 	guiModeSubtitle    = "Subtitle"
 )
@@ -84,6 +85,9 @@ type ui struct {
 	logPath    string
 	cancelRun  context.CancelFunc
 	running    bool
+	cancelling bool
+
+	cancelFeedbackStop chan struct{}
 
 	logRefreshPending bool
 	logRefreshDirty   bool
@@ -360,14 +364,65 @@ func (u *ui) startPipeline() {
 }
 
 func (u *ui) cancelPipeline() {
-	u.mu.Lock()
-	cancel := u.cancelRun
-	u.mu.Unlock()
+	cancel := u.beginCancelFeedback()
 	if cancel != nil {
-		u.cancel.Disable()
-		u.OnLog("Cancellation requested...")
 		cancel()
 	}
+}
+
+func (u *ui) beginCancelFeedback() context.CancelFunc {
+	u.mu.Lock()
+	cancel := u.cancelRun
+	if cancel == nil {
+		u.mu.Unlock()
+		return nil
+	}
+	if u.cancelling {
+		u.mu.Unlock()
+		return cancel
+	}
+	stop := make(chan struct{})
+	if u.cancelFeedbackStop != nil {
+		close(u.cancelFeedbackStop)
+	}
+	u.cancelFeedbackStop = stop
+	u.cancelling = true
+	u.mu.Unlock()
+
+	if u.cancel != nil {
+		u.cancel.SetText("Cancelling...")
+		u.cancel.Disable()
+	}
+	u.OnLog("Cancellation requested. Waiting for running tools to stop...")
+	go u.logCancelFeedback(stop, time.Now())
+	return cancel
+}
+
+func (u *ui) logCancelFeedback(stop <-chan struct{}, started time.Time) {
+	ticker := time.NewTicker(cancelStatusEvery)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			u.mu.Lock()
+			active := u.running && u.cancelling
+			u.mu.Unlock()
+			if !active {
+				return
+			}
+			u.OnLog(cancelFeedbackMessage(time.Since(started)))
+		case <-stop:
+			return
+		}
+	}
+}
+
+func cancelFeedbackMessage(elapsed time.Duration) string {
+	elapsed = elapsed.Round(time.Second)
+	if elapsed < time.Second {
+		elapsed = time.Second
+	}
+	return fmt.Sprintf("Still cancelling after %s. Waiting for running tools to exit...", elapsed)
 }
 
 func (u *ui) setRunning(running bool) {
@@ -375,6 +430,7 @@ func (u *ui) setRunning(running bool) {
 	u.running = running
 	if !running {
 		u.cancelRun = nil
+		u.stopCancelFeedbackLocked()
 	}
 	u.mu.Unlock()
 	if running {
@@ -386,6 +442,7 @@ func (u *ui) setRunning(running bool) {
 		}
 		u.mode.Disable()
 		u.burnIn.Disable()
+		u.cancel.SetText("Cancel")
 		u.cancel.Enable()
 	} else {
 		u.start.Enable()
@@ -396,8 +453,23 @@ func (u *ui) setRunning(running bool) {
 		}
 		u.mode.Enable()
 		u.refreshModeControls()
+		u.cancel.SetText("Cancel")
 		u.cancel.Disable()
 	}
+}
+
+func (u *ui) stopCancelFeedback() {
+	u.mu.Lock()
+	u.stopCancelFeedbackLocked()
+	u.mu.Unlock()
+}
+
+func (u *ui) stopCancelFeedbackLocked() {
+	if u.cancelFeedbackStop != nil {
+		close(u.cancelFeedbackStop)
+		u.cancelFeedbackStop = nil
+	}
+	u.cancelling = false
 }
 
 func (u *ui) applyRuntimeSettings(cfg *config.Config) {

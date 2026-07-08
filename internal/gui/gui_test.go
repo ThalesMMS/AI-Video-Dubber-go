@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	fynetest "fyne.io/fyne/v2/test"
@@ -162,6 +163,41 @@ func TestValidateAPIEndpointReportsSpecificProblem(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "query string or fragment") {
 		t.Fatalf("error = %q, want specific API base validation", err.Error())
+	}
+}
+
+func TestCancelPipelineRelabelsButtonAndLogsTeardownWait(t *testing.T) {
+	cancelled := false
+	cancelButton := widget.NewButton("Cancel", nil)
+	ui := &ui{
+		cancel:            cancelButton,
+		cancelRun:         func() { cancelled = true },
+		running:           true,
+		logRefreshPending: true,
+	}
+	defer ui.stopCancelFeedback()
+
+	ui.cancelPipeline()
+
+	if !cancelled {
+		t.Fatal("cancel function was not called")
+	}
+	if cancelButton.Text != "Cancelling..." {
+		t.Fatalf("cancel button text = %q, want Cancelling...", cancelButton.Text)
+	}
+	if !cancelButton.Disabled() {
+		t.Fatal("cancel button stayed enabled after cancellation request")
+	}
+	if !strings.Contains(ui.logBuilder.String(), "Cancellation requested. Waiting for running tools to stop") {
+		t.Fatalf("cancel log missing:\n%s", ui.logBuilder.String())
+	}
+}
+
+func TestCancelFeedbackMessageIncludesElapsedWait(t *testing.T) {
+	got := cancelFeedbackMessage(12 * time.Second)
+
+	if !strings.Contains(got, "Still cancelling after 12s") {
+		t.Fatalf("message = %q, want elapsed wait", got)
 	}
 }
 
