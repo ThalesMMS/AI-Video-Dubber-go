@@ -31,6 +31,7 @@ import (
 	"github.com/ai-video-dubber/ai-video-dubber-go/internal/language"
 	"github.com/ai-video-dubber/ai-video-dubber-go/internal/pipeline"
 	"github.com/ai-video-dubber/ai-video-dubber-go/internal/translation"
+	"github.com/ai-video-dubber/ai-video-dubber-go/internal/usererror"
 )
 
 const (
@@ -342,7 +343,7 @@ func (u *ui) startPipeline() {
 		case errors.Is(runErr, context.Canceled):
 			u.OnLog("Pipeline cancelled by user.")
 		default:
-			u.OnLog("ERROR: " + runErr.Error())
+			u.OnLog("ERROR: " + usererror.Message(runErr))
 		}
 
 		fyne.Do(func() {
@@ -358,7 +359,7 @@ func (u *ui) startPipeline() {
 					dialog.ShowInformation("Success", "Your dubbed video has been created:\n\n"+result.OutputVideo, u.window)
 				}
 			} else if !errors.Is(runErr, context.Canceled) {
-				dialog.ShowError(runErr, u.window)
+				dialog.ShowError(errors.New(usererror.Message(runErr)), u.window)
 			}
 		})
 	}()

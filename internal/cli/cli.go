@@ -23,6 +23,7 @@ import (
 	"github.com/ai-video-dubber/ai-video-dubber-go/internal/transcription"
 	"github.com/ai-video-dubber/ai-video-dubber-go/internal/translation"
 	"github.com/ai-video-dubber/ai-video-dubber-go/internal/tts"
+	"github.com/ai-video-dubber/ai-video-dubber-go/internal/usererror"
 )
 
 // Run executes a CLI command and returns a process exit code.
@@ -74,7 +75,7 @@ func Run(args []string, projectDir string) int {
 		fmt.Fprintln(os.Stderr, "cancelled")
 		return 130
 	}
-	fmt.Fprintln(os.Stderr, "error:", err)
+	fmt.Fprintln(os.Stderr, "error:", usererror.Message(err))
 	return 1
 }
 
