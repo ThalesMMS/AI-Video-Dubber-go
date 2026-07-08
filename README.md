@@ -34,8 +34,6 @@ The application provides a dark desktop interface similar to the Python version,
 - C compiler and native Fyne dependencies to build the GUI.
 - An OpenAI-compatible API for translation.
 
-On first run, the program creates `.venv`, upgrades the packaging tools, and installs `openai-whisper` and `piper-tts`. The selected Piper voice is also downloaded automatically.
-
 ### Linux (Debian/Ubuntu)
 
 ```bash
@@ -64,6 +62,28 @@ python --version
 ffmpeg -version
 ffprobe -version
 ```
+
+## First Run Downloads And Caches
+
+The first run is intentionally heavier than later runs because the app prepares
+the local speech stack:
+
+- Python packages are installed into `.venv` in the project directory when a
+  bundled Python runtime is not being used. Whisper pulls PyTorch and related
+  packages, so budget several GB of disk and network transfer on a clean
+  machine.
+- The default Whisper model is `large-v3`. Its first transcription downloads
+  the model into Whisper's cache, usually `~/.cache/whisper`, and requires about
+  3 GB for the model file. Use `--whisper-model small` or `WHISPER_MODEL=small`
+  for faster smoke tests on clean machines.
+- Piper voice data is separate from Whisper. Voices are stored under the app's
+  Piper voice cache, which defaults to the OS user cache directory plus
+  `piper-voices` (for example `~/Library/Caches/piper-voices` on macOS). Each
+  medium voice is typically tens of MB; the app verifies downloaded voice files
+  against Piper's published size/checksum metadata before using them.
+- First-run setup can take several minutes on a fast connection and much longer
+  on slow networks or CPU-only machines. Later runs reuse `.venv`, the Whisper
+  model cache, and the Piper voice cache unless those directories are removed.
 
 ## Quick Start
 

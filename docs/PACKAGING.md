@@ -13,7 +13,24 @@ Ship `AI-Video-Dubber-go` as a macOS `.app` that opens with a double-click and d
 - `scripts/package-macos.sh` generates `dist/AI-Video-Dubber.app` and `dist/AI-Video-Dubber-cli-darwin-<arch>.tar.gz`.
 - `make package-macos` runs the full packaging flow; `make package-cli` generates only the CLI tarball.
 - The script accepts `FFMPEG_BIN` and `FFPROBE_BIN` for native arm64 builds when the default downloaded binaries are not suitable.
-- The `.app` still needs validation on a clean machine without Python/FFmpeg in `PATH` before distribution to end users.
+- Distribution readiness depends on the clean-machine checklist below; do not ship a build until those checks pass for the target architecture.
+
+## Clean-Machine Release Checklist
+
+Run this on a fresh macOS account, VM, or machine that does not have Homebrew
+Python or FFmpeg in `PATH`:
+
+1. Build the `.app` and CLI tarball from a clean checkout.
+2. Start the `.app` by double-clicking it, not from a terminal.
+3. Confirm the GUI can start a run with `PATH` limited to system directories
+   such as `/usr/bin:/bin:/usr/sbin:/sbin`.
+4. Process a short sample video in subtitle mode and dub mode.
+5. Verify the packaged CLI works from the tarball with the same sample video.
+6. Record bundle size, CLI tarball size, first-run setup time, Whisper model
+   download time, Piper voice download time, and final cache sizes.
+7. Confirm logs show bundled Python/FFmpeg resolution and no dependency on
+   developer-machine paths.
+8. Repeat after signing/notarization if those steps are enabled.
 
 ## Current State
 
