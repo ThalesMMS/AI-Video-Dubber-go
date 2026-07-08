@@ -136,6 +136,23 @@ func TestLineWriterFlushesCarriageReturnProgress(t *testing.T) {
 	}
 }
 
+func TestLineWriterQuietModeOnlyKeepsTail(t *testing.T) {
+	writer := newLineWriter(func(line string) {
+		t.Fatalf("quiet writer logged line %q", line)
+	}, true, 4)
+
+	if _, err := writer.Write([]byte("first\nsecond\nthird")); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(writer.pending) != 0 {
+		t.Fatalf("pending length = %d, want 0 in quiet mode", len(writer.pending))
+	}
+	if tail := writer.Tail(); tail != "hird" {
+		t.Fatalf("tail = %q, want retained error tail", tail)
+	}
+}
+
 func TestLineWriterTailKeepsValidUTF8AfterByteTruncation(t *testing.T) {
 	writer := newLineWriter(nil, true, 2)
 

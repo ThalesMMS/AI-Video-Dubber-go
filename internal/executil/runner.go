@@ -187,6 +187,9 @@ func (w *lineWriter) Write(data []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.appendTail(data)
+	if w.quiet || w.log == nil {
+		return len(data), nil
+	}
 	w.pending = append(w.pending, data...)
 	for {
 		index, width := lineBreak(w.pending)
@@ -195,7 +198,7 @@ func (w *lineWriter) Write(data []byte) (int, error) {
 		}
 		line := RedactSecrets(strings.TrimRight(string(w.pending[:index]), "\r"))
 		w.pending = w.pending[index+width:]
-		if !w.quiet && w.log != nil && strings.TrimSpace(line) != "" {
+		if strings.TrimSpace(line) != "" {
 			w.log(line)
 		}
 	}
