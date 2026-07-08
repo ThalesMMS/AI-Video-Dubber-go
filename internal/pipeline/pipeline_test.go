@@ -44,6 +44,40 @@ func TestShouldRun(t *testing.T) {
 	}
 }
 
+func TestRunRejectsUnsupportedLanguageBeforeLocalWork(t *testing.T) {
+	_, err := (Pipeline{ProjectDir: t.TempDir()}).Run(context.Background(), config.Config{
+		InputPath:    "video.mp4",
+		LanguageCode: "xx",
+		APIBase:      "http://localhost:8000",
+	})
+
+	if err == nil {
+		t.Fatal("Run accepted unsupported language")
+	}
+	if !strings.Contains(err.Error(), "unsupported language") {
+		t.Fatalf("error = %q, want unsupported language", err.Error())
+	}
+}
+
+func TestRunRejectsMissingInputBeforeLocalWork(t *testing.T) {
+	dir := t.TempDir()
+	_, err := (Pipeline{ProjectDir: dir}).Run(context.Background(), config.Config{
+		InputPath:    filepath.Join(dir, "missing.mp4"),
+		LanguageCode: "pt-BR",
+		APIBase:      "http://localhost:8000",
+	})
+
+	if err == nil {
+		t.Fatal("Run accepted missing input")
+	}
+	if !strings.Contains(err.Error(), "input video") {
+		t.Fatalf("error = %q, want input video", err.Error())
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, ".venv")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf(".venv stat error = %v, want not exist", statErr)
+	}
+}
+
 func TestBeginUsesOneBasedSixStepProgress(t *testing.T) {
 	observer := &recordingObserver{}
 	p := Pipeline{Observer: observer}

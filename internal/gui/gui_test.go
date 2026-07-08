@@ -8,6 +8,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"fyne.io/fyne/v2/container"
 	fynetest "fyne.io/fyne/v2/test"
 	"fyne.io/fyne/v2/widget"
 
@@ -253,5 +254,43 @@ func TestApplyRunOptionsUsesRegenerateCheckbox(t *testing.T) {
 	ui.applyRunOptions(&cfg, config.ModeDub)
 	if cfg.SubtitleBurnIn {
 		t.Fatal("SubtitleBurnIn = true in dub mode")
+	}
+}
+
+func TestRefreshModeControlsUpdatesStartTextBurnInAndSteps(t *testing.T) {
+	mode := widget.NewRadioGroup([]string{guiModeDub, guiModeSubtitle}, nil)
+	mode.SetSelected(guiModeDub)
+	ui := &ui{
+		start:    widget.NewButton("", nil),
+		mode:     mode,
+		burnIn:   widget.NewCheck("Burn subtitles into video", nil),
+		stepsBox: container.NewVBox(),
+	}
+
+	ui.refreshModeControls()
+	if ui.start.Text != "▶  Start Dubbing" {
+		t.Fatalf("start text = %q, want dubbing", ui.start.Text)
+	}
+	if ui.burnIn.Visible() {
+		t.Fatal("burn-in option visible in dub mode")
+	}
+	if len(ui.steps) != 6 {
+		t.Fatalf("dub steps = %d, want 6", len(ui.steps))
+	}
+
+	ui.mode.SetSelected(guiModeSubtitle)
+	ui.burnIn.SetChecked(true)
+	ui.refreshModeControls()
+	if ui.start.Text != "▶  Start Subtitling" {
+		t.Fatalf("start text = %q, want subtitling", ui.start.Text)
+	}
+	if !ui.burnIn.Visible() {
+		t.Fatal("burn-in option hidden in subtitle mode")
+	}
+	if len(ui.steps) != 5 {
+		t.Fatalf("subtitle steps = %d, want 5", len(ui.steps))
+	}
+	if ui.steps[4].label.Text != "Create burned-in video" {
+		t.Fatalf("last subtitle step = %q, want burn-in label", ui.steps[4].label.Text)
 	}
 }
