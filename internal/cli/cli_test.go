@@ -2,9 +2,11 @@ package cli
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ai-video-dubber/ai-video-dubber-go/internal/config"
+	"github.com/ai-video-dubber/ai-video-dubber-go/internal/tts"
 )
 
 func TestParseCompleteRunConfigSetsSubtitleMode(t *testing.T) {
@@ -71,5 +73,35 @@ func TestParseCompleteRunConfigKeepsDubTTSFlags(t *testing.T) {
 func TestRunSubtitleHelpReturnsSuccess(t *testing.T) {
 	if code := Run([]string{"subtitle", "-h"}, t.TempDir()); code != 0 {
 		t.Fatalf("Run(subtitle -h) exit code = %d, want 0", code)
+	}
+}
+
+func TestRunSynthesizeHelpReturnsSuccess(t *testing.T) {
+	if code := Run([]string{"synthesize", "-h"}, t.TempDir()); code != 0 {
+		t.Fatalf("Run(synthesize -h) exit code = %d, want 0", code)
+	}
+}
+
+func TestSynthesizeUsageGroupsAdvancedFlagsAndShowsExamples(t *testing.T) {
+	set := newFlagSet("synthesize")
+	addSynthesizeFlags(set, config.Defaults(), tts.Defaults())
+	var builder strings.Builder
+
+	printSynthesizeUsage(&builder, set)
+
+	help := builder.String()
+	for _, want := range []string{
+		"Basic options:",
+		"Runtime/cache options:",
+		"Advanced voice controls:",
+		"Advanced grouping and timing controls:",
+		"--input string\n      translated .srt or .segments.txt file (required)",
+		"--keep-temp\n      keep intermediate WAV files",
+		"--length-scale 1.12 --sentence-silence 0.35",
+		"--max-group-gap-ms 250 --max-group-duration-ms 4500",
+	} {
+		if !strings.Contains(help, want) {
+			t.Fatalf("synthesize help missing %q:\n%s", want, help)
+		}
 	}
 }

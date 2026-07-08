@@ -204,6 +204,21 @@ The headless binary accepts the same subcommands:
 
 Use `-h` after any subcommand to see all options. The `synthesize` command exposes advanced grouping, Piper, and timing-correction controls.
 
+For the common TTS tuning path, start with only the pacing and silence knobs:
+
+```bash
+./bin/ai-video-dubber-cli synthesize \
+  --input video.pt-BR.srt \
+  --language pt-BR \
+  --length-scale 1.12 \
+  --sentence-silence 0.35
+```
+
+Increase `--length-scale` for slower speech, lower it slightly for faster speech,
+and use `--sentence-silence` for pause length. If separate subtitle cues are being
+merged into phrases that feel too long, lower `--max-group-gap-ms` before changing
+the lower-level Piper noise controls.
+
 ## Default Languages And Voices
 
 | Language | Code | Piper Voice |
