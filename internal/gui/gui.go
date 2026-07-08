@@ -38,6 +38,8 @@ const (
 	guiModeSubtitle    = "Subtitle"
 )
 
+var whisperModelOptions = []string{"tiny", "base", "small", "medium", "large-v3"}
+
 // Run creates the desktop application and blocks until it exits.
 func Run(projectDir string) {
 	application := app.NewWithID("io.github.ai-video-dubber")
@@ -57,19 +59,20 @@ type ui struct {
 	window      fyne.Window
 	projectDir  string
 
-	fileLabel *widget.Label
-	apiBase   *widget.Entry
-	apiKey    *widget.Entry
-	model     *widget.Entry
-	mode      *widget.RadioGroup
-	burnIn    *widget.Check
-	language  *widget.Select
-	browse    *widget.Button
-	start     *widget.Button
-	cancel    *widget.Button
-	logEntry  *widget.Entry
-	stepsBox  *fyne.Container
-	steps     []*stepIndicator
+	fileLabel    *widget.Label
+	apiBase      *widget.Entry
+	apiKey       *widget.Entry
+	model        *widget.Entry
+	whisperModel *widget.Select
+	mode         *widget.RadioGroup
+	burnIn       *widget.Check
+	language     *widget.Select
+	browse       *widget.Button
+	start        *widget.Button
+	cancel       *widget.Button
+	logEntry     *widget.Entry
+	stepsBox     *fyne.Container
+	steps        []*stepIndicator
 
 	mu         sync.Mutex
 	logBuilder strings.Builder
@@ -91,6 +94,12 @@ func newUI(application fyne.App, window fyne.Window, projectDir string) *ui {
 	result.apiKey.SetText(config.DefaultAPIKey)
 	result.model = widget.NewEntry()
 	result.model.SetText(application.Preferences().String("model"))
+	result.whisperModel = widget.NewSelect(whisperModelOptions, nil)
+	selectedWhisperModel := application.Preferences().StringWithFallback("whisper_model", defaultWhisperModelSelection())
+	if !contains(whisperModelOptions, selectedWhisperModel) {
+		selectedWhisperModel = config.DefaultWhisperModel
+	}
+	result.whisperModel.SetSelected(selectedWhisperModel)
 
 	labels := make([]string, 0, len(language.Supported()))
 	for _, item := range language.Supported() {
@@ -156,8 +165,11 @@ func (u *ui) content() fyne.CanvasObject {
 	modelRow := formRow("Model:", u.model, hint)
 	llmCard := card(2, "LLM API settings (for translation)", container.NewVBox(endpointRow, keyRow, modelRow))
 
-	modeCard := card(3, "Choose output mode", container.NewVBox(u.mode, u.burnIn))
-	languageCard := card(4, "Choose target language", u.language)
+	whisperRow := formRow("Whisper:", u.whisperModel, nil)
+	speechCard := card(3, "Local speech settings", whisperRow)
+
+	modeCard := card(4, "Choose output mode", container.NewVBox(u.mode, u.burnIn))
+	languageCard := card(5, "Choose target language", u.language)
 
 	u.stepsBox = container.NewVBox()
 	u.rebuildStepIndicators()
@@ -167,12 +179,13 @@ func (u *ui) content() fyne.CanvasObject {
 	logBackground.StrokeWidth = 1
 	logBox := container.NewStack(logBackground, container.NewPadded(u.logEntry))
 	logBox = container.NewGridWrap(fyne.NewSize(680, 200), logBox)
-	progressCard := card(5, "Pipeline progress", container.NewVBox(u.stepsBox, container.NewPadded(logBox)))
+	progressCard := card(6, "Pipeline progress", container.NewVBox(u.stepsBox, container.NewPadded(logBox)))
 
 	body := container.NewVBox(
 		header,
 		fileCard,
 		llmCard,
+		speechCard,
 		modeCard,
 		languageCard,
 		progressCard,
@@ -274,6 +287,9 @@ func (u *ui) startPipeline() {
 
 	u.application.Preferences().SetString("api_base", apiBase)
 	u.application.Preferences().SetString("model", strings.TrimSpace(u.model.Text))
+	if u.whisperModel != nil {
+		u.application.Preferences().SetString("whisper_model", strings.TrimSpace(u.whisperModel.Selected))
+	}
 	u.application.Preferences().SetString("language", lang.DisplayName)
 	u.openLogFile(inputPath, runMode)
 	u.resetRun()
@@ -292,15 +308,7 @@ func (u *ui) startPipeline() {
 	cfg.Model = strings.TrimSpace(u.model.Text)
 	cfg.Force = true
 	cfg.SubtitleBurnIn = runMode == config.ModeSubtitle && u.burnIn != nil && u.burnIn.Checked
-	if value := strings.TrimSpace(os.Getenv("WHISPER_MODEL")); value != "" {
-		cfg.WhisperModel = value
-	}
-	if value := strings.TrimSpace(os.Getenv("VENV_DIR")); value != "" {
-		cfg.VenvDir = value
-	}
-	if value := strings.TrimSpace(os.Getenv("DATA_DIR")); value != "" {
-		cfg.VoiceDataDir = value
-	}
+	u.applyRuntimeSettings(&cfg)
 
 	go func() {
 		defer u.closeLogFile()
@@ -364,6 +372,9 @@ func (u *ui) setRunning(running bool) {
 		u.start.Disable()
 		u.browse.Disable()
 		u.language.Disable()
+		if u.whisperModel != nil {
+			u.whisperModel.Disable()
+		}
 		u.mode.Disable()
 		u.burnIn.Disable()
 		u.cancel.Enable()
@@ -371,10 +382,36 @@ func (u *ui) setRunning(running bool) {
 		u.start.Enable()
 		u.browse.Enable()
 		u.language.Enable()
+		if u.whisperModel != nil {
+			u.whisperModel.Enable()
+		}
 		u.mode.Enable()
 		u.refreshModeControls()
 		u.cancel.Disable()
 	}
+}
+
+func (u *ui) applyRuntimeSettings(cfg *config.Config) {
+	if u.whisperModel != nil {
+		if value := strings.TrimSpace(u.whisperModel.Selected); value != "" {
+			cfg.WhisperModel = value
+		}
+	} else if value := strings.TrimSpace(os.Getenv("WHISPER_MODEL")); value != "" {
+		cfg.WhisperModel = value
+	}
+	if value := strings.TrimSpace(os.Getenv("VENV_DIR")); value != "" {
+		cfg.VenvDir = value
+	}
+	if value := strings.TrimSpace(os.Getenv("DATA_DIR")); value != "" {
+		cfg.VoiceDataDir = value
+	}
+}
+
+func defaultWhisperModelSelection() string {
+	if value := strings.TrimSpace(os.Getenv("WHISPER_MODEL")); value != "" {
+		return value
+	}
+	return config.DefaultWhisperModel
 }
 
 func (u *ui) resetRun() {

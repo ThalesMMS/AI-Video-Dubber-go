@@ -7,6 +7,8 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"fyne.io/fyne/v2/widget"
+
 	"github.com/ai-video-dubber/ai-video-dubber-go/internal/config"
 )
 
@@ -88,5 +90,19 @@ func TestOnLogRedactsSecretsBeforePersisting(t *testing.T) {
 	}
 	if strings.Contains(ui.logBuilder.String(), "super-secret") {
 		t.Fatalf("secret leaked to display log:\n%s", ui.logBuilder.String())
+	}
+}
+
+func TestApplyRuntimeSettingsUsesSelectedWhisperModel(t *testing.T) {
+	t.Setenv("WHISPER_MODEL", "large-v3")
+	selectModel := widget.NewSelect(whisperModelOptions, nil)
+	selectModel.SetSelected("small")
+	ui := &ui{whisperModel: selectModel}
+	cfg := config.Defaults()
+
+	ui.applyRuntimeSettings(&cfg)
+
+	if cfg.WhisperModel != "small" {
+		t.Fatalf("WhisperModel = %q, want small", cfg.WhisperModel)
 	}
 }
