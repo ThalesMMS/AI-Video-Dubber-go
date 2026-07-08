@@ -7,6 +7,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	fynetest "fyne.io/fyne/v2/test"
 	"fyne.io/fyne/v2/widget"
 
 	"github.com/ai-video-dubber/ai-video-dubber-go/internal/config"
@@ -90,6 +91,67 @@ func TestOnLogRedactsSecretsBeforePersisting(t *testing.T) {
 	}
 	if strings.Contains(ui.logBuilder.String(), "super-secret") {
 		t.Fatalf("secret leaked to display log:\n%s", ui.logBuilder.String())
+	}
+}
+
+func TestLogTextForCopyUsesPersistedLog(t *testing.T) {
+	ui := &ui{projectDir: t.TempDir(), logRefreshPending: true}
+	ui.openLogFile("input.mp4", config.ModeDub)
+	if ui.logFile == nil {
+		t.Fatal("log file was not opened")
+	}
+
+	ui.OnLog("copyable log line")
+
+	text, err := ui.logTextForCopy()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(text, "copyable log line") {
+		t.Fatalf("persisted log line missing from copy text:\n%s", text)
+	}
+	if !strings.Contains(text, "Log started:") {
+		t.Fatalf("log header missing from copy text:\n%s", text)
+	}
+}
+
+func TestCopyLogCopiesPersistedLogToClipboard(t *testing.T) {
+	application := fynetest.NewApp()
+	ui := &ui{application: application, projectDir: t.TempDir(), logRefreshPending: true}
+	ui.openLogFile("input.mp4", config.ModeDub)
+	if ui.logFile == nil {
+		t.Fatal("log file was not opened")
+	}
+	ui.OnLog("clipboard log line")
+
+	ui.copyLog()
+
+	if got := application.Clipboard().Content(); !strings.Contains(got, "clipboard log line") {
+		t.Fatalf("clipboard = %q, want persisted log content", got)
+	}
+}
+
+func TestCurrentLogFolderAndFileURL(t *testing.T) {
+	projectDir := t.TempDir()
+	ui := &ui{projectDir: projectDir}
+	ui.openLogFile("input.mp4", config.ModeDub)
+	if ui.logFile == nil {
+		t.Fatal("log file was not opened")
+	}
+
+	folder, err := ui.currentLogFolder()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(projectDir, "logs"); folder != want {
+		t.Fatalf("folder = %q, want %q", folder, want)
+	}
+	target, err := fileURL(folder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target.Scheme != "file" {
+		t.Fatalf("file URL scheme = %q, want file", target.Scheme)
 	}
 }
 

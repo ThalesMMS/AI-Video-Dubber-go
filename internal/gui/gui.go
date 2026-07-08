@@ -22,6 +22,7 @@ import (
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/storage"
+	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
 	"github.com/ai-video-dubber/ai-video-dubber-go/assets"
@@ -59,24 +60,27 @@ type ui struct {
 	window      fyne.Window
 	projectDir  string
 
-	fileLabel    *widget.Label
-	apiBase      *widget.Entry
-	apiKey       *widget.Entry
-	model        *widget.Entry
-	whisperModel *widget.Select
-	mode         *widget.RadioGroup
-	burnIn       *widget.Check
-	language     *widget.Select
-	browse       *widget.Button
-	start        *widget.Button
-	cancel       *widget.Button
-	logEntry     *widget.Entry
-	stepsBox     *fyne.Container
-	steps        []*stepIndicator
+	fileLabel           *widget.Label
+	apiBase             *widget.Entry
+	apiKey              *widget.Entry
+	model               *widget.Entry
+	whisperModel        *widget.Select
+	mode                *widget.RadioGroup
+	burnIn              *widget.Check
+	language            *widget.Select
+	browse              *widget.Button
+	start               *widget.Button
+	cancel              *widget.Button
+	copyLogButton       *widget.Button
+	openLogFolderButton *widget.Button
+	logEntry            *widget.Entry
+	stepsBox            *fyne.Container
+	steps               []*stepIndicator
 
 	mu         sync.Mutex
 	logBuilder strings.Builder
 	logFile    *os.File
+	logPath    string
 	cancelRun  context.CancelFunc
 	running    bool
 
@@ -129,6 +133,10 @@ func newUI(application fyne.App, window fyne.Window, projectDir string) *ui {
 	result.cancel = widget.NewButton("Cancel", result.cancelPipeline)
 	result.cancel.Importance = widget.DangerImportance
 	result.cancel.Disable()
+	result.copyLogButton = widget.NewButtonWithIcon("Copy log", theme.ContentCopyIcon(), result.copyLog)
+	result.copyLogButton.Disable()
+	result.openLogFolderButton = widget.NewButtonWithIcon("Open log folder", theme.FolderOpenIcon(), result.openLogFolder)
+	result.openLogFolderButton.Disable()
 
 	result.logEntry = widget.NewMultiLineEntry()
 	result.logEntry.Wrapping = fyne.TextWrapWord
@@ -178,8 +186,9 @@ func (u *ui) content() fyne.CanvasObject {
 	logBackground.StrokeColor = colorBorder
 	logBackground.StrokeWidth = 1
 	logBox := container.NewStack(logBackground, container.NewPadded(u.logEntry))
-	logBox = container.NewGridWrap(fyne.NewSize(680, 200), logBox)
-	progressCard := card(6, "Pipeline progress", container.NewVBox(u.stepsBox, container.NewPadded(logBox)))
+	logBox = container.NewGridWrap(fyne.NewSize(680, 300), logBox)
+	logActions := container.NewHBox(layout.NewSpacer(), u.copyLogButton, u.openLogFolderButton)
+	progressCard := card(6, "Pipeline progress", container.NewVBox(u.stepsBox, logActions, container.NewPadded(logBox)))
 
 	body := container.NewVBox(
 		header,
@@ -429,11 +438,14 @@ func (u *ui) resetRun() {
 
 func (u *ui) openLogFile(inputPath string, mode config.Mode) {
 	u.mu.Lock()
-	defer u.mu.Unlock()
 	if u.logFile != nil {
 		_ = u.logFile.Close()
 		u.logFile = nil
 	}
+	u.logPath = ""
+	u.mu.Unlock()
+	u.setLogActionButtons(false)
+
 	logDir := filepath.Join(u.projectDir, "logs")
 	if err := os.MkdirAll(logDir, 0o755); err != nil {
 		return
@@ -453,10 +465,14 @@ func (u *ui) openLogFile(inputPath string, mode config.Mode) {
 		_ = file.Close()
 		return
 	}
+	u.mu.Lock()
 	u.logFile = file
+	u.logPath = logPath
 	u.logFile.WriteString("[" + time.Now().Format("15:04:05") + "] Log started: " + logPath + "\n")
 	u.logFile.WriteString("[" + time.Now().Format("15:04:05") + "] Input: " + inputPath + "\n")
 	u.logFile.WriteString("[" + time.Now().Format("15:04:05") + "] Mode: " + string(mode) + "\n")
+	u.mu.Unlock()
+	u.setLogActionButtons(true)
 }
 
 func (u *ui) closeLogFile() {
@@ -467,6 +483,107 @@ func (u *ui) closeLogFile() {
 		_ = u.logFile.Close()
 		u.logFile = nil
 	}
+}
+
+func (u *ui) copyLog() {
+	text, err := u.logTextForCopy()
+	if err != nil {
+		if u.window != nil {
+			dialog.ShowError(err, u.window)
+		}
+		return
+	}
+	if strings.TrimSpace(text) == "" {
+		if u.window != nil {
+			dialog.ShowInformation("No log", "There is no log to copy yet.", u.window)
+		}
+		return
+	}
+	if u.application != nil && u.application.Clipboard() != nil {
+		u.application.Clipboard().SetContent(text)
+	}
+	if u.window != nil {
+		dialog.ShowInformation("Log copied", "The current log was copied to the clipboard.", u.window)
+	}
+}
+
+func (u *ui) openLogFolder() {
+	folder, err := u.currentLogFolder()
+	if err != nil {
+		if u.window != nil {
+			dialog.ShowError(err, u.window)
+		}
+		return
+	}
+	target, err := fileURL(folder)
+	if err != nil {
+		if u.window != nil {
+			dialog.ShowError(err, u.window)
+		}
+		return
+	}
+	if u.application != nil {
+		if err := u.application.OpenURL(target); err != nil && u.window != nil {
+			dialog.ShowError(err, u.window)
+		}
+	}
+}
+
+func (u *ui) logTextForCopy() (string, error) {
+	u.mu.Lock()
+	logPath := u.logPath
+	fallback := u.logBuilder.String()
+	u.mu.Unlock()
+
+	if logPath != "" {
+		data, err := os.ReadFile(filepath.Clean(logPath))
+		if err == nil {
+			return string(data), nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return "", fmt.Errorf("read log file: %w", err)
+		}
+	}
+	return fallback, nil
+}
+
+func (u *ui) currentLogFolder() (string, error) {
+	u.mu.Lock()
+	logPath := u.logPath
+	u.mu.Unlock()
+	if logPath == "" {
+		return "", errors.New("no log file has been created yet")
+	}
+	folder := filepath.Dir(logPath)
+	info, err := os.Stat(folder)
+	if err != nil {
+		return "", fmt.Errorf("open log folder: %w", err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("open log folder: %s is not a directory", folder)
+	}
+	return folder, nil
+}
+
+func (u *ui) setLogActionButtons(enabled bool) {
+	if u.copyLogButton != nil {
+		if enabled {
+			u.copyLogButton.Enable()
+		} else {
+			u.copyLogButton.Disable()
+		}
+	}
+	if u.openLogFolderButton != nil {
+		if enabled {
+			u.openLogFolderButton.Enable()
+		} else {
+			u.openLogFolderButton.Disable()
+		}
+	}
+}
+
+func fileURL(path string) (*url.URL, error) {
+	return url.Parse(storage.NewFileURI(path).String())
 }
 
 // OnLog implements pipeline.Observer.
