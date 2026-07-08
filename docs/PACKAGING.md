@@ -13,6 +13,7 @@ Ship `AI-Video-Dubber-go` as a macOS `.app` that opens with a double-click and d
 - `scripts/package-macos.sh` generates `dist/AI-Video-Dubber.app` and `dist/AI-Video-Dubber-cli-darwin-<arch>.tar.gz`.
 - `make package-macos` runs the full packaging flow; `make package-cli` generates only the CLI tarball.
 - The script pins its default Python standalone, FFmpeg/FFprobe, Whisper, and Piper inputs and writes them to `VERSIONS.txt` in each generated artifact.
+- The script respects `PIP_INDEX_URL`, `PIP_NO_INDEX`, and `PIP_FIND_LINKS`, so release builds can use an internal package index or an offline wheelhouse.
 - The script accepts `FFMPEG_BIN` and `FFPROBE_BIN` for native arm64 builds when the default downloaded binaries are not suitable.
 - Distribution readiness depends on the clean-machine checklist below; do not ship a build until those checks pass for the target architecture.
 
@@ -57,6 +58,9 @@ Packages to install into embedded Python:
 - Updated `wheel`, `setuptools`, and `pip`
 
 Install directly into the relocatable Python, without an internal `venv`. This simplifies startup and avoids creating a virtual environment on first run.
+For air-gapped builds, pre-populate a wheelhouse with the pinned packages and
+all transitive dependencies, then set `PIP_NO_INDEX=1` and
+`PIP_FIND_LINKS=/path/to/wheelhouse` before running `make package-macos`.
 
 ### 2. Embedded FFmpeg
 

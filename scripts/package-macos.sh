@@ -20,6 +20,8 @@ FFPROBE_VERSION="${FFPROBE_VERSION:-$FFMPEG_VERSION}"
 FFMPEG_URL="${FFMPEG_URL:-https://evermeet.cx/ffmpeg/ffmpeg-$FFMPEG_VERSION.zip}"
 FFPROBE_URL="${FFPROBE_URL:-https://evermeet.cx/ffmpeg/ffprobe-$FFPROBE_VERSION.zip}"
 PIP_INDEX_URL="${PIP_INDEX_URL:-https://pypi.org/simple}"
+PIP_NO_INDEX="${PIP_NO_INDEX:-}"
+PIP_FIND_LINKS="${PIP_FIND_LINKS:-}"
 OPENAI_WHISPER_VERSION="${OPENAI_WHISPER_VERSION:-20250625}"
 PIPER_TTS_VERSION="${PIPER_TTS_VERSION:-1.4.2}"
 
@@ -107,10 +109,35 @@ extract_python() {
 
 install_python_packages() {
   local python_dir="$1"
-  "$python_dir/bin/python3" -m pip install --index-url "$PIP_INDEX_URL" --upgrade pip wheel setuptools
-  "$python_dir/bin/python3" -m pip install --index-url "$PIP_INDEX_URL" --upgrade "openai-whisper==$OPENAI_WHISPER_VERSION" "piper-tts==$PIPER_TTS_VERSION"
+  pip_install "$python_dir" --upgrade pip wheel setuptools
+  pip_install "$python_dir" --upgrade "openai-whisper==$OPENAI_WHISPER_VERSION" "piper-tts==$PIPER_TTS_VERSION"
   "$python_dir/bin/python3" -c 'import whisper, piper'
   "$python_dir/bin/python3" -m piper --help >/dev/null
+}
+
+pip_install() {
+  local python_dir="$1"
+  shift
+  local pip_args=("-m" "pip" "install")
+  if pip_no_index_enabled; then
+    pip_args+=("--no-index")
+  else
+    pip_args+=("--index-url" "$PIP_INDEX_URL")
+  fi
+  if [[ -n "$PIP_FIND_LINKS" ]]; then
+    local link
+    for link in $PIP_FIND_LINKS; do
+      pip_args+=("--find-links" "$link")
+    done
+  fi
+  "$python_dir/bin/python3" "${pip_args[@]}" "$@"
+}
+
+pip_no_index_enabled() {
+  case "$PIP_NO_INDEX" in
+    1|true|TRUE|True|yes|YES|Yes|on|ON|On) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 copy_or_download_binary() {
@@ -170,6 +197,8 @@ FFmpeg URL: ${FFMPEG_BIN:-$FFMPEG_URL}
 FFprobe version: $FFPROBE_VERSION
 FFprobe URL: ${FFPROBE_BIN:-$FFPROBE_URL}
 pip index URL: $PIP_INDEX_URL
+pip no index: ${PIP_NO_INDEX:-0}
+pip find links: ${PIP_FIND_LINKS:-}
 openai-whisper: $OPENAI_WHISPER_VERSION
 piper-tts: $PIPER_TTS_VERSION
 EOF

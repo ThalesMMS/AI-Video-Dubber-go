@@ -26,3 +26,15 @@ if grep -Eq "releases/latest|getrelease" <<<"$output"; then
   echo "$output" >&2
   exit 1
 fi
+
+offline_output="$(ARCH=arm64 PIP_NO_INDEX=1 PIP_FIND_LINKS=/opt/ai-video-dubber/wheels "$ROOT/scripts/package-macos.sh" versions)"
+if ! grep -Fq "pip no index: 1" <<<"$offline_output"; then
+  echo "package-macos versions output missing offline pip mode:" >&2
+  echo "$offline_output" >&2
+  exit 1
+fi
+if ! grep -Fq "pip find links: /opt/ai-video-dubber/wheels" <<<"$offline_output"; then
+  echo "package-macos versions output missing wheelhouse path:" >&2
+  echo "$offline_output" >&2
+  exit 1
+fi

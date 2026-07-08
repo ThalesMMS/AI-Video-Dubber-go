@@ -228,6 +228,9 @@ In the `synthesize` subcommand, `--voice` replaces the default voice.
 | `VENV_DIR` | Managed virtual environment | empty in the bundle; `<project>/.venv` during development |
 | `DATA_DIR` | Piper voice cache | user cache |
 | `AI_VIDEO_DUBBER_HOME` | Application base directory | automatically detected |
+| `PIP_INDEX_URL` | Python package index for managed runtime installs | `https://pypi.org/simple` |
+| `PIP_NO_INDEX` | Set to `1` to install only from local wheel links | unset |
+| `PIP_FIND_LINKS` | Space-separated local wheelhouse paths or URLs for pip `--find-links` | unset |
 
 Example:
 
@@ -236,6 +239,16 @@ LLM_API_BASE=http://localhost:1234 \
 LLM_API_KEY=local \
 LLM_MODEL=qwen \
 WHISPER_MODEL=medium \
+./bin/ai-video-dubber-cli dub --input video.mp4 --language pt-BR
+```
+
+For air-gapped installs, prepare a wheelhouse that contains the pinned
+`openai-whisper` and `piper-tts` packages plus their transitive dependencies,
+then run setup with:
+
+```bash
+PIP_NO_INDEX=1 \
+PIP_FIND_LINKS=/path/to/wheelhouse \
 ./bin/ai-video-dubber-cli dub --input video.mp4 --language pt-BR
 ```
 
@@ -350,6 +363,7 @@ Useful variables:
 | `FFMPEG_URL` / `FFPROBE_URL` | Alternative `.zip` URLs for the static binaries |
 | `FFMPEG_BIN` / `FFPROBE_BIN` | Copy local binaries instead of downloading |
 | `OPENAI_WHISPER_VERSION` / `PIPER_TTS_VERSION` | Pinned Python package versions |
+| `PIP_INDEX_URL` / `PIP_NO_INDEX` / `PIP_FIND_LINKS` | Package index or local wheelhouse controls for embedded Python installs |
 | `CODESIGN_IDENTITY` | Identity for hardened-runtime signing |
 | `NOTARYTOOL_PROFILE` | `notarytool` profile for notarization |
 

@@ -178,6 +178,31 @@ exit 9
 	}
 }
 
+func TestPipInstallArgsSupportsOfflineWheelhouse(t *testing.T) {
+	t.Setenv("PIP_NO_INDEX", "1")
+	t.Setenv("PIP_FIND_LINKS", "/opt/ai-video-dubber/wheels")
+
+	args := strings.Join(pipInstallArgs("openai-whisper==20250625"), " ")
+	if !strings.Contains(args, "--no-index") {
+		t.Fatalf("pip args missing --no-index: %s", args)
+	}
+	if !strings.Contains(args, "--find-links /opt/ai-video-dubber/wheels") {
+		t.Fatalf("pip args missing wheelhouse: %s", args)
+	}
+	if strings.Contains(args, "--index-url") {
+		t.Fatalf("offline pip args should not include --index-url: %s", args)
+	}
+}
+
+func TestPipInstallArgsUsesCustomIndexURL(t *testing.T) {
+	t.Setenv("PIP_INDEX_URL", "https://packages.example/simple")
+
+	args := strings.Join(pipInstallArgs("piper-tts==1.4.2"), " ")
+	if !strings.Contains(args, "--index-url https://packages.example/simple") {
+		t.Fatalf("pip args missing custom index URL: %s", args)
+	}
+}
+
 func TestSetupRuntimeMissingExecutableIncludesInstallHint(t *testing.T) {
 	cfg := config.Config{
 		FFmpegBin:  "ai-video-dubber-missing-ffmpeg",

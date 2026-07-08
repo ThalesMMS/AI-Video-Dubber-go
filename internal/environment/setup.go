@@ -137,8 +137,36 @@ func createVirtualEnv(ctx context.Context, runner executil.Runner, cfg config.Co
 }
 
 func pipInstallArgs(args ...string) []string {
-	result := []string{"-m", "pip", "install", "--index-url", defaultPIPIndexURL}
+	result := []string{"-m", "pip", "install"}
+	if pipNoIndex() {
+		result = append(result, "--no-index")
+	} else {
+		result = append(result, "--index-url", pipIndexURL())
+	}
+	for _, link := range pipFindLinks() {
+		result = append(result, "--find-links", link)
+	}
 	return append(result, args...)
+}
+
+func pipIndexURL() string {
+	if value := strings.TrimSpace(os.Getenv("PIP_INDEX_URL")); value != "" {
+		return value
+	}
+	return defaultPIPIndexURL
+}
+
+func pipNoIndex() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("PIP_NO_INDEX"))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func pipFindLinks() []string {
+	return strings.Fields(os.Getenv("PIP_FIND_LINKS"))
 }
 
 func requireRuntimeExecutable(name string) error {
