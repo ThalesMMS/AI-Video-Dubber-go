@@ -182,12 +182,12 @@ func (w *lineWriter) Write(data []byte) (int, error) {
 	w.appendTail(data)
 	w.pending = append(w.pending, data...)
 	for {
-		index := bytes.IndexByte(w.pending, '\n')
+		index, width := lineBreak(w.pending)
 		if index < 0 {
 			break
 		}
 		line := RedactSecrets(strings.TrimRight(string(w.pending[:index]), "\r"))
-		w.pending = w.pending[index+1:]
+		w.pending = w.pending[index+width:]
 		if !w.quiet && w.log != nil && strings.TrimSpace(line) != "" {
 			w.log(line)
 		}
@@ -205,6 +205,21 @@ func (w *lineWriter) Flush() {
 		}
 	}
 	w.pending = nil
+}
+
+func lineBreak(data []byte) (int, int) {
+	for index, value := range data {
+		switch value {
+		case '\n':
+			return index, 1
+		case '\r':
+			if index+1 < len(data) && data[index+1] == '\n' {
+				return index, 2
+			}
+			return index, 1
+		}
+	}
+	return -1, 0
 }
 
 func (w *lineWriter) Tail() string {

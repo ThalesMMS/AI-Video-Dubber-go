@@ -106,6 +106,9 @@ func Run(
 	defer os.Remove(tempPath)
 
 	args := []string{"-c", whisperScript, inputPath, model, sourceLanguage, tempPath}
+	if runner.Log != nil {
+		runner.Log(fmt.Sprintf("Loading Whisper model %s (first use may download several GB)...", model))
+	}
 	if err := runner.Run(ctx, pythonExe, args, executil.Options{}); err != nil {
 		return fmt.Errorf("Whisper transcription: %w", err)
 	}

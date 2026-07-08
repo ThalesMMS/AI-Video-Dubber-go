@@ -98,3 +98,22 @@ exit 2
 		t.Fatalf("redacted CLI flag missing from command error:\n%s", combined)
 	}
 }
+
+func TestLineWriterFlushesCarriageReturnProgress(t *testing.T) {
+	var lines []string
+	writer := newLineWriter(func(line string) { lines = append(lines, line) }, false, 1024)
+
+	if _, err := writer.Write([]byte("Downloading 10%\rDownloading 20%\rDone\n")); err != nil {
+		t.Fatal(err)
+	}
+
+	want := []string{"Downloading 10%", "Downloading 20%", "Done"}
+	if len(lines) != len(want) {
+		t.Fatalf("lines = %#v, want %#v", lines, want)
+	}
+	for index := range want {
+		if lines[index] != want[index] {
+			t.Fatalf("lines[%d] = %q, want %q; all lines=%#v", index, lines[index], want[index], lines)
+		}
+	}
+}
