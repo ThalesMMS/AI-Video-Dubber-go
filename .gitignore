@@ -6,4 +6,5 @@
 /logs
 /sample
 /.cache
+.venv/
 .DS_Store

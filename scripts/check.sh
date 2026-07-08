@@ -13,5 +13,6 @@ fi
 
 go test -tags ci ./...
 go vet -tags ci ./...
+bash scripts/test-gitignore.sh
 bash scripts/test-script-prereqs.sh
 bash scripts/test-package-macos.sh
