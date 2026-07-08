@@ -4,11 +4,28 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 )
+
+func TestRequirePreservesLookPathError(t *testing.T) {
+	t.Setenv("PATH", "")
+
+	err := Require("ai-video-dubber-definitely-missing-tool")
+
+	if err == nil {
+		t.Fatal("Require() succeeded, want lookup error")
+	}
+	if !errors.Is(err, exec.ErrNotFound) {
+		t.Fatalf("error = %v, want exec.ErrNotFound", err)
+	}
+	if !strings.Contains(err.Error(), "required executable") {
+		t.Fatalf("error = %v, want required executable context", err)
+	}
+}
 
 func TestRunnerUsesToolPathAndEnvironment(t *testing.T) {
 	if runtime.GOOS == "windows" {

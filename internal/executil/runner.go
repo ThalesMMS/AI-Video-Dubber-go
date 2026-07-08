@@ -165,7 +165,7 @@ func (r Runner) commandEnv(optionEnv []string) []string {
 // Require verifies that an executable is available in PATH.
 func Require(name string) error {
 	if _, err := exec.LookPath(name); err != nil {
-		return fmt.Errorf("required executable %q was not found in PATH", name)
+		return fmt.Errorf("required executable %q was not found in PATH: %w", name, err)
 	}
 	return nil
 }
