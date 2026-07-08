@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ai-video-dubber/ai-video-dubber-go/internal/srt"
@@ -25,7 +26,18 @@ const (
 	defaultHTTPMaxRetries   = 2
 	defaultHTTPRetryBackoff = 500 * time.Millisecond
 	maxHTTPRetryBackoff     = 10 * time.Second
+	resolvedModelCacheTTL   = 5 * time.Minute
 )
+
+type resolvedModelCacheEntry struct {
+	Model   string
+	Expires time.Time
+}
+
+var resolvedModelCache = struct {
+	sync.Mutex
+	entries map[string]resolvedModelCacheEntry
+}{entries: make(map[string]resolvedModelCacheEntry)}
 
 // LogFunc receives progress and warning messages.
 type LogFunc func(string)
@@ -56,6 +68,7 @@ func (c *Client) Preflight(ctx context.Context) (string, error) {
 	model := strings.TrimSpace(c.Model)
 	if model == "" {
 		model = models[0]
+		cacheResolvedModel(c.APIBase, model)
 		c.logf("Auto-detected model: %s", model)
 	}
 	c.logf("Translation API reachable: %s", strings.TrimRight(c.APIBase, "/"))
@@ -123,6 +136,10 @@ func (c *Client) resolveModel(ctx context.Context) (string, error) {
 	if model := strings.TrimSpace(c.Model); model != "" {
 		return model, nil
 	}
+	if model, ok := cachedResolvedModel(c.APIBase); ok {
+		c.logf("Auto-detected model: %s (cached)", model)
+		return model, nil
+	}
 	models, err := c.listModels(ctx)
 	if err != nil {
 		return "", err
@@ -130,8 +147,40 @@ func (c *Client) resolveModel(ctx context.Context) (string, error) {
 	if len(models) == 0 {
 		return "", fmt.Errorf("the API returned no models")
 	}
+	cacheResolvedModel(c.APIBase, models[0])
 	c.logf("Auto-detected model: %s", models[0])
 	return models[0], nil
+}
+
+func cachedResolvedModel(apiBase string) (string, bool) {
+	key := resolvedModelCacheKey(apiBase)
+	now := time.Now()
+	resolvedModelCache.Lock()
+	defer resolvedModelCache.Unlock()
+	entry, ok := resolvedModelCache.entries[key]
+	if !ok {
+		return "", false
+	}
+	if !now.Before(entry.Expires) {
+		delete(resolvedModelCache.entries, key)
+		return "", false
+	}
+	return entry.Model, true
+}
+
+func cacheResolvedModel(apiBase, model string) {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return
+	}
+	key := resolvedModelCacheKey(apiBase)
+	resolvedModelCache.Lock()
+	defer resolvedModelCache.Unlock()
+	resolvedModelCache.entries[key] = resolvedModelCacheEntry{Model: model, Expires: time.Now().Add(resolvedModelCacheTTL)}
+}
+
+func resolvedModelCacheKey(apiBase string) string {
+	return strings.TrimRight(strings.TrimSpace(apiBase), "/")
 }
 
 func (c *Client) listModels(ctx context.Context) ([]string, error) {

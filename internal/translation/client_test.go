@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -131,6 +132,56 @@ func TestTranslateFileAgainstOpenAICompatibleServer(t *testing.T) {
 	}
 	if modelCalls.Load() != 1 || completionCalls.Load() != 1 {
 		t.Fatalf("calls: models=%d completions=%d", modelCalls.Load(), completionCalls.Load())
+	}
+}
+
+func TestTranslateFileCachesAutoDetectedModel(t *testing.T) {
+	var modelCalls atomic.Int32
+	var completionCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/v1/models":
+			modelCalls.Add(1)
+			_ = json.NewEncoder(writer).Encode(map[string]any{"data": []map[string]string{{"id": "cached-model"}}})
+		case "/v1/chat/completions":
+			completionCalls.Add(1)
+			var payload struct {
+				Model string `json:"model"`
+			}
+			if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+				http.Error(writer, err.Error(), http.StatusBadRequest)
+				return
+			}
+			if payload.Model != "cached-model" {
+				http.Error(writer, "unexpected model "+payload.Model, http.StatusBadRequest)
+				return
+			}
+			_ = json.NewEncoder(writer).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": "[0] Um"}}}})
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	content := "1\n00:00:00,000 --> 00:00:01,000\nOne\n"
+	for index := 0; index < 2; index++ {
+		input := filepath.Join(dir, "input-"+strconv.Itoa(index)+".srt")
+		output := filepath.Join(dir, "output-"+strconv.Itoa(index)+".srt")
+		if err := os.WriteFile(input, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		client := Client{APIBase: server.URL, HTTPClient: server.Client()}
+		if err := client.TranslateFile(context.Background(), input, output, "Brazilian Portuguese (pt-BR)", 10); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if modelCalls.Load() != 1 {
+		t.Fatalf("model calls = %d, want cached single call", modelCalls.Load())
+	}
+	if completionCalls.Load() != 2 {
+		t.Fatalf("completion calls = %d, want 2", completionCalls.Load())
 	}
 }
 
