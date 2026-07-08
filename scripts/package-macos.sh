@@ -13,15 +13,20 @@ APP_BASENAME="${APP_BASENAME:-AI-Video-Dubber}"
 APP_DIR="$DIST_DIR/$APP_BASENAME.app"
 CLI_NAME="${CLI_NAME:-AI-Video-Dubber-cli-darwin-$ARCH}"
 CLI_DIR="$DIST_DIR/$CLI_NAME"
-PYTHON_VERSION_PREFIX="${PYTHON_VERSION_PREFIX:-cpython-3.12}"
-PYTHON_REPO_API="${PYTHON_REPO_API:-https://api.github.com/repos/astral-sh/python-build-standalone/releases/latest}"
-FFMPEG_URL="${FFMPEG_URL:-https://evermeet.cx/ffmpeg/getrelease/zip}"
-FFPROBE_URL="${FFPROBE_URL:-https://evermeet.cx/ffmpeg/getrelease/ffprobe/zip}"
+PYTHON_STANDALONE_RELEASE="${PYTHON_STANDALONE_RELEASE:-20260623}"
+PYTHON_STANDALONE_VERSION="${PYTHON_STANDALONE_VERSION:-3.12.13+20260623}"
+FFMPEG_VERSION="${FFMPEG_VERSION:-8.1.2}"
+FFPROBE_VERSION="${FFPROBE_VERSION:-$FFMPEG_VERSION}"
+FFMPEG_URL="${FFMPEG_URL:-https://evermeet.cx/ffmpeg/ffmpeg-$FFMPEG_VERSION.zip}"
+FFPROBE_URL="${FFPROBE_URL:-https://evermeet.cx/ffmpeg/ffprobe-$FFPROBE_VERSION.zip}"
+PIP_INDEX_URL="${PIP_INDEX_URL:-https://pypi.org/simple}"
+OPENAI_WHISPER_VERSION="${OPENAI_WHISPER_VERSION:-20250625}"
+PIPER_TTS_VERSION="${PIPER_TTS_VERSION:-1.4.2}"
 
 case "$MODE" in
-  all|app|cli) ;;
+  all|app|cli|versions) ;;
   *)
-    echo "usage: $0 [all|app|cli]" >&2
+    echo "usage: $0 [all|app|cli|versions]" >&2
     exit 2
     ;;
 esac
@@ -41,22 +46,13 @@ case "$ARCH" in
     ;;
 esac
 
+PYTHON_STANDALONE_URL="${PYTHON_STANDALONE_URL:-https://github.com/astral-sh/python-build-standalone/releases/download/$PYTHON_STANDALONE_RELEASE/cpython-${PYTHON_STANDALONE_VERSION//+/%2B}-$PYTHON_TARGET-install_only.tar.gz}"
+
 need() {
   command -v "$1" >/dev/null 2>&1 || {
     echo "$1 was not found in PATH" >&2
     exit 1
   }
-}
-
-host_python() {
-  if command -v python3 >/dev/null 2>&1; then
-    command -v python3
-  elif [[ -x /usr/bin/python3 ]]; then
-    printf '%s\n' /usr/bin/python3
-  else
-    echo "python3 is required to parse GitHub release metadata. Set PYTHON_STANDALONE_URL to skip discovery." >&2
-    exit 1
-  fi
 }
 
 toml_value() {
@@ -83,41 +79,7 @@ download() {
 }
 
 python_standalone_url() {
-  if [[ -n "${PYTHON_STANDALONE_URL:-}" ]]; then
-    printf '%s\n' "$PYTHON_STANDALONE_URL"
-    return
-  fi
-  local metadata="$CACHE_DIR/python-build-standalone-latest.json"
-  mkdir -p "$CACHE_DIR"
-  download "$PYTHON_REPO_API" "$metadata"
-  "$(host_python)" - "$metadata" "$PYTHON_VERSION_PREFIX" "$PYTHON_TARGET" <<'PY'
-import json
-import sys
-
-metadata_path, version_prefix, target = sys.argv[1:4]
-with open(metadata_path, "r", encoding="utf-8") as handle:
-    release = json.load(handle)
-
-matches = []
-for asset in release.get("assets", []):
-    name = asset.get("name", "")
-    url = asset.get("browser_download_url", "")
-    if (
-        name.startswith(version_prefix)
-        and target in name
-        and name.endswith("-install_only.tar.gz")
-        and url
-    ):
-        matches.append((name, url))
-
-if not matches:
-    raise SystemExit(
-        f"No {version_prefix} install_only asset for {target} in {release.get('html_url', 'latest release')}"
-    )
-
-matches.sort()
-print(matches[-1][1])
-PY
+  printf '%s\n' "$PYTHON_STANDALONE_URL"
 }
 
 extract_python() {
@@ -145,8 +107,8 @@ extract_python() {
 
 install_python_packages() {
   local python_dir="$1"
-  "$python_dir/bin/python3" -m pip install --upgrade pip wheel setuptools
-  "$python_dir/bin/python3" -m pip install --upgrade openai-whisper piper-tts
+  "$python_dir/bin/python3" -m pip install --index-url "$PIP_INDEX_URL" --upgrade pip wheel setuptools
+  "$python_dir/bin/python3" -m pip install --index-url "$PIP_INDEX_URL" --upgrade "openai-whisper==$OPENAI_WHISPER_VERSION" "piper-tts==$PIPER_TTS_VERSION"
   "$python_dir/bin/python3" -c 'import whisper, piper'
   "$python_dir/bin/python3" -m piper --help >/dev/null
 }
@@ -193,6 +155,30 @@ prepare_ffmpeg() {
   "$ffmpeg_dir/ffmpeg" -version >/dev/null
   "$ffmpeg_dir/ffprobe" -version >/dev/null
   printf '%s\n' "$ffmpeg_dir"
+}
+
+versions_manifest() {
+  cat <<EOF
+AI Video Dubber macOS package inputs
+Architecture: $ARCH
+Go architecture: $GOARCH
+Python standalone version: $PYTHON_STANDALONE_VERSION
+Python standalone release: $PYTHON_STANDALONE_RELEASE
+Python standalone URL: $PYTHON_STANDALONE_URL
+FFmpeg version: $FFMPEG_VERSION
+FFmpeg URL: ${FFMPEG_BIN:-$FFMPEG_URL}
+FFprobe version: $FFPROBE_VERSION
+FFprobe URL: ${FFPROBE_BIN:-$FFPROBE_URL}
+pip index URL: $PIP_INDEX_URL
+openai-whisper: $OPENAI_WHISPER_VERSION
+piper-tts: $PIPER_TTS_VERSION
+EOF
+}
+
+write_versions_manifest() {
+  local output="$1"
+  mkdir -p "$(dirname "$output")"
+  versions_manifest >"$output"
 }
 
 copy_runtime() {
@@ -266,6 +252,7 @@ build_app() {
   cp assets/icon.png "$APP_DIR/Contents/Resources/icon.png"
   write_info_plist "$APP_DIR/Contents/Info.plist"
   copy_runtime "$APP_DIR/Contents/Resources" "$python_dir" "$ffmpeg_dir"
+  write_versions_manifest "$APP_DIR/Contents/Resources/VERSIONS.txt"
   if [[ -n "${CODESIGN_IDENTITY:-}" ]]; then
     codesign --force --deep --options runtime --sign "$CODESIGN_IDENTITY" "$APP_DIR"
   elif [[ "${ADHOC_CODESIGN:-1}" != "0" ]] && command -v codesign >/dev/null 2>&1; then
@@ -285,10 +272,16 @@ build_cli_tarball() {
   mkdir -p "$CLI_DIR"
   cp "$BUILD_DIR/bin/ai-video-dubber-cli" "$CLI_DIR/ai-video-dubber-cli"
   copy_runtime "$CLI_DIR" "$python_dir" "$ffmpeg_dir"
+  write_versions_manifest "$CLI_DIR/VERSIONS.txt"
   rm -f "$tarball"
   tar -czf "$tarball" -C "$DIST_DIR" "$CLI_NAME"
   echo "CLI tarball: $tarball"
 }
+
+if [[ "$MODE" == "versions" ]]; then
+  versions_manifest
+  exit 0
+fi
 
 need curl
 need ditto

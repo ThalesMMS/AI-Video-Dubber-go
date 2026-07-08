@@ -303,6 +303,7 @@ The `scripts/package-macos.sh` script assembles a `.app` bundle with:
 - `Contents/MacOS/ai-video-dubber`
 - `Contents/Resources/python/bin/python3` with `openai-whisper` and `piper-tts`
 - `Contents/Resources/ffmpeg/ffmpeg` and `ffprobe`
+- `Contents/Resources/VERSIONS.txt` with the pinned runtime inputs used for the build
 - Separate tarball for the headless CLI with the same runtime layout
 
 ```bash
@@ -316,13 +317,20 @@ dist/AI-Video-Dubber.app
 dist/AI-Video-Dubber-cli-darwin-<arch>.tar.gz
 ```
 
-By default, the script discovers the latest
-`astral-sh/python-build-standalone` release for Python 3.12 and downloads
-FFmpeg/FFprobe through the `evermeet.cx` API. For reproducible builds or
-internal sources, use:
+By default, the script uses pinned inputs: Python standalone
+`3.12.13+20260623`, FFmpeg/FFprobe `8.1.2`, `openai-whisper` `20250625`,
+and `piper-tts` `1.4.2`. The same resolved values are written to
+`VERSIONS.txt` inside the `.app` and CLI tarball. To inspect the configured
+inputs without building, run:
 
 ```bash
-PYTHON_STANDALONE_URL=https://.../cpython-3.12.x+release-aarch64-apple-darwin-install_only.tar.gz \
+./scripts/package-macos.sh versions
+```
+
+For internal sources, use:
+
+```bash
+PYTHON_STANDALONE_URL=https://.../cpython-3.12.13%2B20260623-aarch64-apple-darwin-install_only.tar.gz \
 FFMPEG_BIN=/path/to/ffmpeg \
 FFPROBE_BIN=/path/to/ffprobe \
 make package-macos
@@ -336,10 +344,12 @@ Useful variables:
 | Variable | Purpose |
 |---|---|
 | `ARCH` | `arm64` or `x86_64`; default: local architecture |
-| `PYTHON_VERSION_PREFIX` | Python asset prefix; default: `cpython-3.12` |
-| `PYTHON_STANDALONE_URL` | Exact Python standalone URL, skipping GitHub discovery |
+| `PYTHON_STANDALONE_RELEASE` / `PYTHON_STANDALONE_VERSION` | Pinned Python standalone release/version used to build the default URL |
+| `PYTHON_STANDALONE_URL` | Exact Python standalone URL override |
+| `FFMPEG_VERSION` / `FFPROBE_VERSION` | Pinned evermeet.cx binary versions used to build the default URLs |
 | `FFMPEG_URL` / `FFPROBE_URL` | Alternative `.zip` URLs for the static binaries |
 | `FFMPEG_BIN` / `FFPROBE_BIN` | Copy local binaries instead of downloading |
+| `OPENAI_WHISPER_VERSION` / `PIPER_TTS_VERSION` | Pinned Python package versions |
 | `CODESIGN_IDENTITY` | Identity for hardened-runtime signing |
 | `NOTARYTOOL_PROFILE` | `notarytool` profile for notarization |
 

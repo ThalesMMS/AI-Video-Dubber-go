@@ -12,6 +12,7 @@ Ship `AI-Video-Dubber-go` as a macOS `.app` that opens with a double-click and d
 - `internal/environment` skips `.venv` creation when embedded Python is in use and validates that Whisper and Piper can be imported.
 - `scripts/package-macos.sh` generates `dist/AI-Video-Dubber.app` and `dist/AI-Video-Dubber-cli-darwin-<arch>.tar.gz`.
 - `make package-macos` runs the full packaging flow; `make package-cli` generates only the CLI tarball.
+- The script pins its default Python standalone, FFmpeg/FFprobe, Whisper, and Piper inputs and writes them to `VERSIONS.txt` in each generated artifact.
 - The script accepts `FFMPEG_BIN` and `FFPROBE_BIN` for native arm64 builds when the default downloaded binaries are not suitable.
 - Distribution readiness depends on the clean-machine checklist below; do not ship a build until those checks pass for the target architecture.
 
@@ -26,11 +27,12 @@ Python or FFmpeg in `PATH`:
    such as `/usr/bin:/bin:/usr/sbin:/sbin`.
 4. Process a short sample video in subtitle mode and dub mode.
 5. Verify the packaged CLI works from the tarball with the same sample video.
-6. Record bundle size, CLI tarball size, first-run setup time, Whisper model
+6. Inspect `VERSIONS.txt` in both artifacts and archive it with release notes.
+7. Record bundle size, CLI tarball size, first-run setup time, Whisper model
    download time, Piper voice download time, and final cache sizes.
-7. Confirm logs show bundled Python/FFmpeg resolution and no dependency on
+8. Confirm logs show bundled Python/FFmpeg resolution and no dependency on
    developer-machine paths.
-8. Repeat after signing/notarization if those steps are enabled.
+9. Repeat after signing/notarization if those steps are enabled.
 
 ## Current State
 
@@ -50,8 +52,8 @@ Use **Python standalone** from the `indygreg/python-build-standalone` project as
 
 Packages to install into embedded Python:
 
-- `openai-whisper`
-- `piper-tts`
+- `openai-whisper` at the version pinned in `scripts/package-macos.sh`
+- `piper-tts` at the version pinned in `scripts/package-macos.sh`
 - Updated `wheel`, `setuptools`, and `pip`
 
 Install directly into the relocatable Python, without an internal `venv`. This simplifies startup and avoids creating a virtual environment on first run.
