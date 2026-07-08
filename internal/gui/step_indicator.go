@@ -7,17 +7,19 @@ import (
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/widget"
 
 	"github.com/ai-video-dubber/ai-video-dubber-go/internal/pipeline"
 )
 
 type stepIndicator struct {
-	root    fyne.CanvasObject
-	circle  *canvas.Rectangle
-	icon    *canvas.Text
-	label   *canvas.Text
-	rowFill *canvas.Rectangle
-	number  int
+	root     fyne.CanvasObject
+	circle   *canvas.Rectangle
+	icon     *canvas.Text
+	label    *canvas.Text
+	rowFill  *canvas.Rectangle
+	activity *widget.Activity
+	number   int
 }
 
 func newStepIndicator(number int, label string) *stepIndicator {
@@ -34,12 +36,15 @@ func newStepIndicator(number int, label string) *stepIndicator {
 
 	text := canvas.NewText(label, colorDim)
 	text.TextSize = 14
+	activity := widget.NewActivity()
+	activity.Hide()
+	activityCell := container.NewGridWrap(fyne.NewSize(26, 26), activity)
 
 	rowFill := canvas.NewRectangle(color.Transparent)
 	rowFill.CornerRadius = 8
-	row := container.NewBorder(nil, nil, iconCell, nil, text)
+	row := container.NewBorder(nil, nil, iconCell, activityCell, text)
 	root := container.NewStack(rowFill, container.NewPadded(row))
-	return &stepIndicator{root: root, circle: circle, icon: icon, label: text, rowFill: rowFill, number: number}
+	return &stepIndicator{root: root, circle: circle, icon: icon, label: text, rowFill: rowFill, activity: activity, number: number}
 }
 
 func (s *stepIndicator) setState(state pipeline.State) {
@@ -66,6 +71,13 @@ func (s *stepIndicator) setState(state pipeline.State) {
 		iconText = "✗"
 		labelColor = colorError
 		rowColor = colorErrorSoft
+	}
+	if state == pipeline.StateRunning {
+		s.activity.Show()
+		s.activity.Start()
+	} else {
+		s.activity.Stop()
+		s.activity.Hide()
 	}
 	s.circle.FillColor = circleColor
 	s.icon.Text = iconText
