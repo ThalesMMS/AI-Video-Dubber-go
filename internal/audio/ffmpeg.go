@@ -77,6 +77,54 @@ func EmbedSubtitles(ctx context.Context, runner executil.Runner, videoPath, subt
 	})
 }
 
+// BurnInSubtitles re-encodes the video with the SRT rendered into the pixels and
+// copies the original audio streams.
+func BurnInSubtitles(ctx context.Context, runner executil.Runner, videoPath, subtitlePath, outputPath string) error {
+	if empty, err := isEmptyTextFile(subtitlePath); err != nil {
+		return err
+	} else if empty {
+		return copyVideoAudio(ctx, runner, videoPath, outputPath)
+	}
+	if err := requireSubtitlesFilter(ctx, runner); err != nil {
+		return err
+	}
+	return atomicMediaOutput(outputPath, func(tempPath string) error {
+		args := []string{
+			"-hide_banner", "-nostdin", "-y",
+			"-i", videoPath,
+			"-map", "0:v:0", "-map", "0:a?",
+			"-vf", subtitlesFilter(subtitlePath),
+			"-c:v", "libx264", "-crf", "18", "-preset", "medium",
+			"-c:a", "copy",
+			"-movflags", "+faststart",
+			tempPath,
+		}
+		if err := runner.Run(ctx, "ffmpeg", args, executil.Options{}); err != nil {
+			return fmt.Errorf("burn subtitles into video: %w", err)
+		}
+		return nil
+	})
+}
+
+func requireSubtitlesFilter(ctx context.Context, runner executil.Runner) error {
+	output, err := runner.Output(ctx, "ffmpeg", []string{"-hide_banner", "-filters"}, executil.Options{})
+	if err != nil {
+		return fmt.Errorf("inspect ffmpeg subtitle filters: %w", err)
+	}
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 2 && fields[1] == "subtitles" {
+			return nil
+		}
+	}
+	return fmt.Errorf("ffmpeg subtitles filter is unavailable; use an ffmpeg build with libass to burn subtitles into video")
+}
+
+func subtitlesFilter(path string) string {
+	escaped := strings.NewReplacer(`\`, `\\`, `'`, `\'`).Replace(path)
+	return "subtitles=filename='" + escaped + "'"
+}
+
 func copyVideoAudio(ctx context.Context, runner executil.Runner, videoPath, outputPath string) error {
 	return atomicMediaOutput(outputPath, func(tempPath string) error {
 		args := []string{

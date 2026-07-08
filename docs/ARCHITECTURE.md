@@ -28,15 +28,15 @@ Processes, files, networking, cancellation, and interface state are controlled i
 
 ### Complete Run Modes
 
-`config.ModeDub` keeps the original six-stage dubbing flow: setup, audio extraction, transcription, translation, Piper synthesis, and final video/audio merge. `config.ModeSubtitle` shares the setup/extract/transcribe/translate stages, skips Piper voice preparation and TTS, and uses FFmpeg to copy the original video/audio streams into an MP4 with the translated SRT as a selectable `mov_text` subtitle track.
+`config.ModeDub` keeps the original six-stage dubbing flow: setup, audio extraction, transcription, translation, Piper synthesis, and final video/audio merge. `config.ModeSubtitle` shares the setup/extract/transcribe/translate stages, skips Piper voice preparation and TTS, and uses FFmpeg to copy the original video/audio streams into an MP4 with the translated SRT as a selectable `mov_text` subtitle track. When `Config.SubtitleBurnIn` is true, the final stage instead renders the SRT through FFmpeg's `subtitles` filter, re-encodes the video with libx264, and copies the original audio.
 
 ### Deterministic Artifacts
 
-`audio.BuildPathsForMode` centralizes intermediate file names. Dub mode keeps `video.<lang>.synced.mp4`; subtitle mode creates `video.<lang>.srt` plus `video.<lang>.subtitled.mp4`. This keeps compatibility with the reference project and lets the CLI resume shared stages.
+`audio.BuildPathsForModeOptions` centralizes intermediate file names. Dub mode keeps `video.<lang>.synced.mp4`; subtitle mode creates `video.<lang>.srt` plus `video.<lang>.subtitled.mp4`, or `video.<lang>.burned-in.mp4` for burned-in subtitle output. This keeps compatibility with the reference project and lets the CLI resume shared stages.
 
 ### Tolerant Translation
 
-The client accepts endpoints with or without `/v1`, automatically detects the model, and preserves the original when a numbered line is missing from the response. SRT writes are atomic.
+The client accepts endpoints with or without `/v1`, automatically detects the model, and asks for one JSON translation array per batch so cue order survives sentence fragments. It still accepts legacy numbered responses and preserves the original when a line is missing from the response. SRT writes are atomic.
 
 ### TTS Synchronization
 

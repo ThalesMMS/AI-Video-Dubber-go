@@ -20,6 +20,9 @@ func TestNormalize(t *testing.T) {
 	if cfg.Mode != ModeDub {
 		t.Fatalf("Mode = %q, want %q", cfg.Mode, ModeDub)
 	}
+	if cfg.TranslationTimeout != DefaultTranslationTimeout {
+		t.Fatalf("TranslationTimeout = %s, want %s", cfg.TranslationTimeout, DefaultTranslationTimeout)
+	}
 	if cfg.VenvDir != filepath.Join(project, ".venv") {
 		t.Fatalf("VenvDir = %q", cfg.VenvDir)
 	}

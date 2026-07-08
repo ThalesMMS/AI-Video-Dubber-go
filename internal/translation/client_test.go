@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/ai-video-dubber/ai-video-dubber-go/internal/srt"
 )
@@ -43,6 +44,29 @@ func TestParseTranslations(t *testing.T) {
 	}
 }
 
+func TestParseTranslationsFromJSONPreservesFragments(t *testing.T) {
+	client := Client{}
+	got := client.parseTranslations(`{"translations":["Vou começar.","E eu sei que alguns de vocês estão treinando","em outra modalidade.","Mas outros estão começando.","Então vou garantir."]}`, []string{
+		"I'm going to start.",
+		"And I know some of you are training",
+		"into another modality.",
+		"But others are starting.",
+		"So I will make sure.",
+	})
+	want := []string{
+		"Vou começar.",
+		"E eu sei que alguns de vocês estão treinando",
+		"em outra modalidade.",
+		"Mas outros estão começando.",
+		"Então vou garantir.",
+	}
+	for index := range want {
+		if got[index] != want[index] {
+			t.Fatalf("got[%d] = %q, want %q", index, got[index], want[index])
+		}
+	}
+}
+
 func TestTranslateFileAgainstOpenAICompatibleServer(t *testing.T) {
 	var modelCalls atomic.Int32
 	var completionCalls atomic.Int32
@@ -58,7 +82,12 @@ func TestTranslateFileAgainstOpenAICompatibleServer(t *testing.T) {
 		case "/v1/chat/completions":
 			completionCalls.Add(1)
 			var payload struct {
-				Model    string `json:"model"`
+				Model          string  `json:"model"`
+				Temperature    float64 `json:"temperature"`
+				MaxTokens      int     `json:"max_tokens"`
+				ResponseFormat struct {
+					Type string `json:"type"`
+				} `json:"response_format"`
 				Messages []struct {
 					Content string `json:"content"`
 				} `json:"messages"`
@@ -69,6 +98,10 @@ func TestTranslateFileAgainstOpenAICompatibleServer(t *testing.T) {
 			}
 			if payload.Model != "test-model" || len(payload.Messages) != 1 || !strings.Contains(payload.Messages[0].Content, "Brazilian Portuguese") {
 				http.Error(writer, "bad completion payload", http.StatusBadRequest)
+				return
+			}
+			if payload.Temperature != 0 || payload.MaxTokens <= 0 || payload.MaxTokens >= 4096 || payload.ResponseFormat.Type != "json_object" {
+				http.Error(writer, "bad generation controls", http.StatusBadRequest)
 				return
 			}
 			_ = json.NewEncoder(writer).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": "[0] Um\n[1] Dois"}}}})
@@ -123,6 +156,16 @@ func TestTranslateFileWritesEmptyOutputForEmptySRT(t *testing.T) {
 	}
 	if len(logs) != 1 || !strings.Contains(logs[0], "No subtitle entries") {
 		t.Fatalf("logs = %#v", logs)
+	}
+}
+
+func TestClientUsesConfiguredRequestTimeout(t *testing.T) {
+	client := Client{RequestTimeout: 5 * time.Minute}
+
+	got := client.client(120 * time.Second).Timeout
+
+	if got != 5*time.Minute {
+		t.Fatalf("client timeout = %s, want 5m0s", got)
 	}
 }
 

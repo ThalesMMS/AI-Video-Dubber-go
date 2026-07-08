@@ -54,6 +54,14 @@ func TestBuildPathsForMode(t *testing.T) {
 		t.Fatalf("subtitle TranslatedSRT = %q", subtitlePaths.TranslatedSRT)
 	}
 
+	burnedPaths, err := BuildPathsForModeOptions(input, "pt-BR", "", config.ModeSubtitle, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(burnedPaths.FinalVideo, "video.test.pt-BR.burned-in.mp4") {
+		t.Fatalf("burn-in FinalVideo = %q", burnedPaths.FinalVideo)
+	}
+
 	explicit := filepath.Join(dir, "custom-output.mp4")
 	explicitPaths, err := BuildPathsForMode(input, "pt-BR", explicit, config.ModeSubtitle)
 	if err != nil {
@@ -220,6 +228,107 @@ printf media > "$last"
 	}
 }
 
+func TestBurnInSubtitlesUsesFFmpegFilterAndCopiesOriginalAudio(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script test")
+	}
+	dir := t.TempDir()
+	ffmpeg := filepath.Join(dir, "ffmpeg")
+	argsPath := filepath.Join(dir, "args.txt")
+	if err := os.WriteFile(ffmpeg, []byte(`#!/bin/sh
+if [ "$1" = "-hide_banner" ] && [ "$2" = "-filters" ]; then
+  printf ' T. subtitles         V->V       Render text subtitles onto input video using libass\n'
+  exit 0
+fi
+printf '%s\n' "$@" > "$CAPTURE_ARGS"
+last=""
+for arg do
+  last="$arg"
+done
+printf media > "$last"
+`), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	video := filepath.Join(dir, "source.mp4")
+	subtitle := filepath.Join(dir, "source subtitle.pt-BR.srt")
+	output := filepath.Join(dir, "source.pt-BR.burned-in.mp4")
+	if err := os.WriteFile(video, []byte("video"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(subtitle, []byte("1\n00:00:00,000 --> 00:00:01,000\nOlá\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runner := executil.Runner{
+		Tools: map[string]string{"ffmpeg": ffmpeg},
+		Env:   []string{"CAPTURE_ARGS=" + argsPath},
+	}
+
+	if err := BurnInSubtitles(context.Background(), runner, video, subtitle, output); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "media" {
+		t.Fatalf("output content = %q", data)
+	}
+	argsData, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := strings.Split(strings.TrimSpace(string(argsData)), "\n")
+	if countArg(args, "-i") != 1 || hasArg(args, subtitle) || hasArg(args, "mov_text") {
+		t.Fatalf("burn-in ffmpeg args should read subtitles through a video filter only:\n%s", string(argsData))
+	}
+	filter := argAfter(args, "-vf")
+	if !strings.Contains(filter, "subtitles=filename=") || !strings.Contains(filter, subtitle) {
+		t.Fatalf("subtitle filter = %q, want path %q", filter, subtitle)
+	}
+	for _, want := range []string{
+		"-i", video,
+		"-map", "0:v:0", "0:a?",
+		"-c:v", "libx264", "-crf", "18", "-preset", "medium",
+		"-c:a", "copy",
+	} {
+		if !hasArg(args, want) {
+			t.Fatalf("ffmpeg args missing %q:\n%s", want, string(argsData))
+		}
+	}
+}
+
+func TestBurnInSubtitlesRequiresSubtitlesFilter(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script test")
+	}
+	dir := t.TempDir()
+	ffmpeg := filepath.Join(dir, "ffmpeg")
+	if err := os.WriteFile(ffmpeg, []byte(`#!/bin/sh
+if [ "$1" = "-hide_banner" ] && [ "$2" = "-filters" ]; then
+  printf ' .. null              V->V       Pass the source unchanged to the output\n'
+  exit 0
+fi
+exit 1
+`), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	video := filepath.Join(dir, "source.mp4")
+	subtitle := filepath.Join(dir, "source.pt-BR.srt")
+	output := filepath.Join(dir, "source.pt-BR.burned-in.mp4")
+	if err := os.WriteFile(video, []byte("video"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(subtitle, []byte("1\n00:00:00,000 --> 00:00:01,000\nOlá\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := BurnInSubtitles(context.Background(), executil.Runner{Tools: map[string]string{"ffmpeg": ffmpeg}}, video, subtitle, output)
+	if err == nil || !strings.Contains(err.Error(), "subtitles filter") {
+		t.Fatalf("BurnInSubtitles error = %v, want subtitles filter message", err)
+	}
+}
+
 func TestEmbedSubtitlesWithEmptyFileCopiesOriginalStreamsOnly(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell-script test")
@@ -276,4 +385,23 @@ func hasArg(args []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func countArg(args []string, want string) int {
+	count := 0
+	for _, arg := range args {
+		if arg == want {
+			count++
+		}
+	}
+	return count
+}
+
+func argAfter(args []string, key string) string {
+	for index, arg := range args {
+		if arg == key && index+1 < len(args) {
+			return args[index+1]
+		}
+	}
+	return ""
 }

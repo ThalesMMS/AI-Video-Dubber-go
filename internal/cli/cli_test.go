@@ -22,6 +22,7 @@ func TestParseCompleteRunConfigSetsSubtitleMode(t *testing.T) {
 		"--source-language", "en",
 		"--python", "python3",
 		"--venv", filepath.Join(projectDir, ".venv"),
+		"--burn-in",
 		"--force",
 	}, config.ModeSubtitle)
 	if err != nil {
@@ -38,6 +39,9 @@ func TestParseCompleteRunConfigSetsSubtitleMode(t *testing.T) {
 	}
 	if cfg.WhisperModel != "small" || cfg.SourceLanguage != "en" || !cfg.Force {
 		t.Fatalf("unexpected runtime config: %#v", cfg)
+	}
+	if !cfg.SubtitleBurnIn {
+		t.Fatalf("SubtitleBurnIn = false, want true: %#v", cfg)
 	}
 }
 

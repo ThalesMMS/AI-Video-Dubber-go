@@ -58,13 +58,29 @@ var subtitleStepLabels = []string{
 	"Create subtitled video",
 }
 
+var subtitleBurnInStepLabels = []string{
+	"Setup environment",
+	"Extract audio",
+	"Transcribe (Whisper)",
+	"Translate subtitles",
+	"Create burned-in video",
+}
+
 // StepLabelsForMode returns the visible progress labels for a complete run mode.
 func StepLabelsForMode(mode config.Mode) []string {
+	return StepLabelsForModeOptions(mode, false)
+}
+
+// StepLabelsForModeOptions returns visible progress labels for a run mode and output style.
+func StepLabelsForModeOptions(mode config.Mode, subtitleBurnIn bool) []string {
 	parsedMode, err := config.ParseMode(string(mode))
 	if err != nil {
 		parsedMode = config.ModeDub
 	}
 	if parsedMode == config.ModeSubtitle {
+		if subtitleBurnIn {
+			return append([]string(nil), subtitleBurnInStepLabels...)
+		}
 		return append([]string(nil), subtitleStepLabels...)
 	}
 	return append([]string(nil), StepLabels[:]...)
@@ -94,7 +110,7 @@ type Pipeline struct {
 // Run executes the complete local pipeline.
 func (p Pipeline) Run(ctx context.Context, rawConfig config.Config) (Result, error) {
 	cfg := rawConfig.Normalize(p.ProjectDir)
-	p.stepLabels = StepLabelsForMode(cfg.Mode)
+	p.stepLabels = StepLabelsForModeOptions(cfg.Mode, cfg.SubtitleBurnIn)
 	lang, err := language.ByCode(cfg.LanguageCode)
 	if err != nil {
 		return Result{}, err
@@ -106,7 +122,7 @@ func (p Pipeline) Run(ctx context.Context, rawConfig config.Config) (Result, err
 	if !inputInfo.Mode().IsRegular() {
 		return Result{}, fmt.Errorf("input is not a regular file: %s", cfg.InputPath)
 	}
-	paths, err := audio.BuildPathsForMode(cfg.InputPath, lang.Code, cfg.OutputPath, cfg.Mode)
+	paths, err := audio.BuildPathsForModeOptions(cfg.InputPath, lang.Code, cfg.OutputPath, cfg.Mode, cfg.SubtitleBurnIn)
 	if err != nil {
 		return Result{}, err
 	}
@@ -195,7 +211,7 @@ func (p Pipeline) Run(ctx context.Context, rawConfig config.Config) (Result, err
 		return fail(current, err)
 	}
 	if runStep {
-		client := translation.Client{APIBase: cfg.APIBase, APIKey: cfg.APIKey, Model: cfg.Model, Log: p.log}
+		client := translation.Client{APIBase: cfg.APIBase, APIKey: cfg.APIKey, Model: cfg.Model, RequestTimeout: cfg.TranslationTimeout, Log: p.log}
 		if err := client.TranslateFile(ctx, paths.TranscriptSRT, paths.TranslatedSRT, lang.TranslationName, cfg.TranslationBatchSize); err != nil {
 			return fail(current, err)
 		}
@@ -207,7 +223,13 @@ func (p Pipeline) Run(ctx context.Context, rawConfig config.Config) (Result, err
 	if cfg.Mode == config.ModeSubtitle {
 		current = StepSynthesize
 		p.begin(current)
-		if err := audio.EmbedSubtitles(ctx, runner, paths.Input, paths.TranslatedSRT, paths.FinalVideo); err != nil {
+		var err error
+		if cfg.SubtitleBurnIn {
+			err = audio.BurnInSubtitles(ctx, runner, paths.Input, paths.TranslatedSRT, paths.FinalVideo)
+		} else {
+			err = audio.EmbedSubtitles(ctx, runner, paths.Input, paths.TranslatedSRT, paths.FinalVideo)
+		}
+		if err != nil {
 			return fail(current, err)
 		}
 		p.finish(current)

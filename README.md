@@ -106,6 +106,7 @@ The main executable opens the GUI when called without arguments and also provide
 ```bash
 ./bin/ai-video-dubber dub --input video.mp4 --language pt-BR
 ./bin/ai-video-dubber subtitle --input video.mp4 --language pt-BR
+./bin/ai-video-dubber subtitle --input video.mp4 --language pt-BR --burn-in
 ```
 
 Default dubbing output:
@@ -121,6 +122,12 @@ video.pt-BR.srt
 video.pt-BR.subtitled.mp4
 ```
 
+With `subtitle --burn-in`, the sidecar SRT is still written and the default video output becomes:
+
+```text
+video.pt-BR.burned-in.mp4
+```
+
 Example with explicit API and model:
 
 ```bash
@@ -130,14 +137,19 @@ Example with explicit API and model:
   --api-base http://localhost:8000 \
   --api-key apikey \
   --model my-model \
+  --batch-size 10 \
+  --translation-timeout 10m \
   --force
 ```
+
+`--batch-size` controls how many subtitle cues are translated per API request. `--translation-timeout` defaults to `120s`; increase it for slower local OpenAI-compatible models.
 
 The headless binary accepts the same subcommands:
 
 ```bash
 ./bin/ai-video-dubber-cli dub --input video.mp4 --language fr
 ./bin/ai-video-dubber-cli subtitle --input video.mp4 --language fr
+./bin/ai-video-dubber-cli subtitle --input video.mp4 --language fr --burn-in
 ```
 
 ### Standalone Stages
@@ -154,7 +166,9 @@ The headless binary accepts the same subcommands:
   --input video.srt \
   --output video.pt-BR.srt \
   --language pt-BR \
-  --api-base http://localhost:8000
+  --api-base http://localhost:8000 \
+  --batch-size 10 \
+  --translation-timeout 10m
 
 # 4. SRT/segments -> synchronized audio
 ./bin/ai-video-dubber-cli synthesize \
@@ -230,6 +244,18 @@ video.json
 video.txt
 video.pt-BR.srt
 video.pt-BR.subtitled.mp4
+```
+
+For `video.mp4` subtitled into `pt-BR` with `--burn-in`:
+
+```text
+video.mp3
+video.srt
+video.segments.txt
+video.json
+video.txt
+video.pt-BR.srt
+video.pt-BR.burned-in.mp4
 ```
 
 The CLI skips existing intermediate files unless `--force` is used. The final video is always remuxed.
@@ -345,7 +371,8 @@ See also [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 - `large-v3` requires substantial memory and can be slow without a GPU. For tests, use `--whisper-model small` or `medium`.
 - Translation sends subtitle text to the configured endpoint; transcription and TTS remain local.
-- The pipeline replaces the main audio track and copies the video track. Additional tracks, chapters, and metadata are not preserved by default.
+- Dub mode replaces the main audio track and copies the video track. Subtitle mode preserves the original audio/video streams and adds a selectable subtitle track by default. With `--burn-in`, FFmpeg re-encodes the video with the subtitle text rendered into the pixels and copies the original audio. Additional tracks, chapters, and metadata are not preserved by default.
+- Burned-in subtitles require an FFmpeg build with the `subtitles` filter, normally provided by libass.
 - Synchronization prioritizes natural speech; when a segment still does not fit the window after bounded correction, the audio is trimmed with a short fade-out.
 
 ## License

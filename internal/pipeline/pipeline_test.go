@@ -74,6 +74,14 @@ func TestStepLabelsForMode(t *testing.T) {
 	if strings.Join(subtitle, "\n") == strings.Join(dub, "\n") || strings.Contains(strings.Join(subtitle, "\n"), "Generate dubbed audio") {
 		t.Fatalf("subtitle labels still include dubbing-only steps: %#v", subtitle)
 	}
+
+	burned := StepLabelsForModeOptions(config.ModeSubtitle, true)
+	if len(burned) != 5 {
+		t.Fatalf("burn-in labels len = %d, want 5", len(burned))
+	}
+	if burned[4] != "Create burned-in video" {
+		t.Fatalf("burn-in fifth label = %q", burned[4])
+	}
 }
 
 func TestBeginUsesOneBasedFiveStepSubtitleProgress(t *testing.T) {

@@ -61,6 +61,7 @@ type ui struct {
 	apiKey    *widget.Entry
 	model     *widget.Entry
 	mode      *widget.RadioGroup
+	burnIn    *widget.Check
 	language  *widget.Select
 	browse    *widget.Button
 	start     *widget.Button
@@ -105,6 +106,11 @@ func newUI(application fyne.App, window fyne.Window, projectDir string) *ui {
 	result.mode.Horizontal = true
 	result.mode.Required = true
 	result.mode.SetSelected(guiModeDub)
+	result.burnIn = widget.NewCheck("Burn subtitles into video", func(value bool) {
+		application.Preferences().SetBool("subtitle_burn_in", value)
+		result.refreshModeControls()
+	})
+	result.burnIn.SetChecked(application.Preferences().Bool("subtitle_burn_in"))
 
 	result.browse = widget.NewButton("Browse…", result.openFileDialog)
 	result.browse.Importance = widget.HighImportance
@@ -118,6 +124,7 @@ func newUI(application fyne.App, window fyne.Window, projectDir string) *ui {
 	result.logEntry.Wrapping = fyne.TextWrapWord
 	result.logEntry.TextStyle = fyne.TextStyle{Monospace: true}
 	result.logEntry.Disable()
+	result.refreshModeControls()
 	return result
 }
 
@@ -148,7 +155,7 @@ func (u *ui) content() fyne.CanvasObject {
 	modelRow := formRow("Model:", u.model, hint)
 	llmCard := card(2, "LLM API settings (for translation)", container.NewVBox(endpointRow, keyRow, modelRow))
 
-	modeCard := card(3, "Choose output mode", u.mode)
+	modeCard := card(3, "Choose output mode", container.NewVBox(u.mode, u.burnIn))
 	languageCard := card(4, "Choose target language", u.language)
 
 	u.stepsBox = container.NewVBox()
@@ -283,6 +290,7 @@ func (u *ui) startPipeline() {
 	cfg.APIKey = u.apiKey.Text
 	cfg.Model = strings.TrimSpace(u.model.Text)
 	cfg.Force = true
+	cfg.SubtitleBurnIn = runMode == config.ModeSubtitle && u.burnIn != nil && u.burnIn.Checked
 	if value := strings.TrimSpace(os.Getenv("WHISPER_MODEL")); value != "" {
 		cfg.WhisperModel = value
 	}
@@ -300,7 +308,11 @@ func (u *ui) startPipeline() {
 		case runErr == nil:
 			u.OnLog("")
 			if cfg.Mode == config.ModeSubtitle {
-				u.OnLog("✓  Done! Your subtitled video is ready.")
+				if cfg.SubtitleBurnIn {
+					u.OnLog("✓  Done! Your burned-in subtitled video is ready.")
+				} else {
+					u.OnLog("✓  Done! Your subtitled video is ready.")
+				}
 			} else {
 				u.OnLog("✓  Done! Your dubbed video is ready.")
 			}
@@ -314,7 +326,11 @@ func (u *ui) startPipeline() {
 			u.setRunning(false)
 			if runErr == nil {
 				if cfg.Mode == config.ModeSubtitle {
-					dialog.ShowInformation("Success", "Your subtitled video has been created:\n\n"+result.OutputVideo+"\n\nSubtitle file:\n"+result.SubtitleSRT, u.window)
+					title := "Your subtitled video has been created:"
+					if cfg.SubtitleBurnIn {
+						title = "Your burned-in subtitled video has been created:"
+					}
+					dialog.ShowInformation("Success", title+"\n\n"+result.OutputVideo+"\n\nSubtitle file:\n"+result.SubtitleSRT, u.window)
 				} else {
 					dialog.ShowInformation("Success", "Your dubbed video has been created:\n\n"+result.OutputVideo, u.window)
 				}
@@ -348,14 +364,15 @@ func (u *ui) setRunning(running bool) {
 		u.browse.Disable()
 		u.language.Disable()
 		u.mode.Disable()
+		u.burnIn.Disable()
 		u.cancel.Enable()
 	} else {
 		u.start.Enable()
 		u.browse.Enable()
 		u.language.Enable()
 		u.mode.Enable()
-		u.cancel.Disable()
 		u.refreshModeControls()
+		u.cancel.Disable()
 	}
 }
 
@@ -497,11 +514,25 @@ func (u *ui) selectedMode() config.Mode {
 }
 
 func (u *ui) refreshModeControls() {
+	subtitleMode := u.selectedMode() == config.ModeSubtitle
 	if u.start != nil {
-		if u.selectedMode() == config.ModeSubtitle {
+		if subtitleMode {
 			u.start.SetText("▶  Start Subtitling")
 		} else {
 			u.start.SetText("▶  Start Dubbing")
+		}
+	}
+	if u.burnIn != nil {
+		if subtitleMode {
+			u.burnIn.Show()
+			if u.running {
+				u.burnIn.Disable()
+			} else {
+				u.burnIn.Enable()
+			}
+		} else {
+			u.burnIn.Hide()
+			u.burnIn.Disable()
 		}
 	}
 	if u.stepsBox != nil && !u.running {
@@ -513,7 +544,7 @@ func (u *ui) rebuildStepIndicators() {
 	if u.stepsBox == nil {
 		return
 	}
-	labels := pipeline.StepLabelsForMode(u.selectedMode())
+	labels := pipeline.StepLabelsForModeOptions(u.selectedMode(), u.selectedMode() == config.ModeSubtitle && u.burnIn != nil && u.burnIn.Checked)
 	u.steps = make([]*stepIndicator, 0, len(labels))
 	u.stepsBox.Objects = nil
 	for index, label := range labels {

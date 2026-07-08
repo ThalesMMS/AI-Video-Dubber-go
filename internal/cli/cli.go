@@ -113,14 +113,20 @@ func parseCompleteRunConfig(name string, args []string, mode config.Mode) (confi
 	sourceLanguage := set.String("source-language", defaults.SourceLanguage, "source audio language code")
 	python := set.String("python", defaults.PythonBin, "system Python executable")
 	venv := set.String("venv", os.Getenv("VENV_DIR"), "Python virtual environment directory")
+	batch := set.Int("batch-size", defaults.TranslationBatchSize, "subtitles per translation request")
+	translationTimeout := set.Duration("translation-timeout", defaults.TranslationTimeout, "translation API request timeout")
 	force := set.Bool("force", false, "regenerate intermediate files")
 	dataDir := defaults.VoiceDataDir
 	keepTemp := false
+	subtitleBurnIn := false
 	var dataDirFlag *string
 	var keepTempFlag *bool
+	var burnInFlag *bool
 	if mode == config.ModeDub {
 		dataDirFlag = set.String("data-dir", envOr("DATA_DIR", defaults.VoiceDataDir), "Piper voice directory")
 		keepTempFlag = set.Bool("keep-temp", false, "keep TTS intermediate WAV files")
+	} else if mode == config.ModeSubtitle {
+		burnInFlag = set.Bool("burn-in", false, "render subtitles into the video pixels instead of adding a selectable subtitle track")
 	}
 	if err := set.Parse(args); err != nil {
 		return config.Config{}, err
@@ -130,6 +136,9 @@ func parseCompleteRunConfig(name string, args []string, mode config.Mode) (confi
 	}
 	if keepTempFlag != nil {
 		keepTemp = *keepTempFlag
+	}
+	if burnInFlag != nil {
+		subtitleBurnIn = *burnInFlag
 	}
 	if strings.TrimSpace(*input) == "" {
 		return config.Config{}, fmt.Errorf("--input is required")
@@ -147,6 +156,9 @@ func parseCompleteRunConfig(name string, args []string, mode config.Mode) (confi
 	cfg.PythonBin = *python
 	cfg.VenvDir = *venv
 	cfg.VoiceDataDir = dataDir
+	cfg.SubtitleBurnIn = subtitleBurnIn
+	cfg.TranslationBatchSize = *batch
+	cfg.TranslationTimeout = *translationTimeout
 	cfg.Force = *force
 	cfg.KeepTemp = keepTemp
 	return cfg, nil
@@ -212,6 +224,7 @@ func runTranslate(ctx context.Context, args []string) error {
 	apiKey := set.String("api-key", envOr("LLM_API_KEY", defaults.APIKey), "API key")
 	model := set.String("model", os.Getenv("LLM_MODEL"), "LLM model (blank auto-detects)")
 	batch := set.Int("batch-size", defaults.TranslationBatchSize, "subtitles per request")
+	translationTimeout := set.Duration("translation-timeout", defaults.TranslationTimeout, "translation API request timeout")
 	if err := set.Parse(args); err != nil {
 		return err
 	}
@@ -225,7 +238,7 @@ func runTranslate(ctx context.Context, args []string) error {
 	if *output == "" {
 		*output = strings.TrimSuffix(*input, filepath.Ext(*input)) + "." + lang.Code + ".srt"
 	}
-	client := translation.Client{APIBase: *apiBase, APIKey: *apiKey, Model: *model, Log: func(line string) { fmt.Println(line) }}
+	client := translation.Client{APIBase: *apiBase, APIKey: *apiKey, Model: *model, RequestTimeout: *translationTimeout, Log: func(line string) { fmt.Println(line) }}
 	return client.TranslateFile(ctx, *input, *output, lang.TranslationName, *batch)
 }
 

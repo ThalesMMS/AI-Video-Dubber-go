@@ -8,14 +8,16 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 )
 
 const (
-	DefaultAPIBase        = "http://localhost:8000"
-	DefaultAPIKey         = "apikey"
-	DefaultWhisperModel   = "large-v3"
-	DefaultSourceLanguage = "en"
-	DefaultBatchSize      = 15
+	DefaultAPIBase            = "http://localhost:8000"
+	DefaultAPIKey             = "apikey"
+	DefaultWhisperModel       = "large-v3"
+	DefaultSourceLanguage     = "en"
+	DefaultBatchSize          = 15
+	DefaultTranslationTimeout = 120 * time.Second
 )
 
 // Mode selects which final artifact the complete pipeline creates.
@@ -44,7 +46,9 @@ type Config struct {
 	VoiceDataDir         string
 	Force                bool
 	KeepTemp             bool
+	SubtitleBurnIn       bool
 	TranslationBatchSize int
+	TranslationTimeout   time.Duration
 }
 
 // BundledResources describes the relocatable tools shipped beside a binary.
@@ -70,6 +74,7 @@ func Defaults() Config {
 		VoiceDataDir:         defaultVoiceDataDir(),
 		Force:                false,
 		TranslationBatchSize: DefaultBatchSize,
+		TranslationTimeout:   DefaultTranslationTimeout,
 	}
 }
 
@@ -117,6 +122,12 @@ func (c Config) Normalize(projectDir string) Config {
 	}
 	if c.TranslationBatchSize <= 0 {
 		c.TranslationBatchSize = defaults.TranslationBatchSize
+	}
+	if c.TranslationTimeout <= 0 {
+		c.TranslationTimeout = defaults.TranslationTimeout
+	}
+	if c.Mode != ModeSubtitle {
+		c.SubtitleBurnIn = false
 	}
 	return c
 }

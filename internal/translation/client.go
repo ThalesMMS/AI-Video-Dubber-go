@@ -25,11 +25,12 @@ type LogFunc func(string)
 
 // Client calls an OpenAI-compatible /v1 API.
 type Client struct {
-	APIBase    string
-	APIKey     string
-	Model      string
-	HTTPClient *http.Client
-	Log        LogFunc
+	APIBase        string
+	APIKey         string
+	Model          string
+	RequestTimeout time.Duration
+	HTTPClient     *http.Client
+	Log            LogFunc
 }
 
 // TranslateFile translates the text of each SRT cue while preserving timing.
@@ -123,21 +124,27 @@ func (c *Client) resolveModel(ctx context.Context) (string, error) {
 }
 
 func (c *Client) translateBatch(ctx context.Context, model, targetLanguage string, texts []string) ([]string, error) {
-	var numbered strings.Builder
+	items := make([]map[string]any, len(texts))
 	for index, text := range texts {
-		fmt.Fprintf(&numbered, "[%d] %s\n", index, strings.TrimSpace(text))
+		items[index] = map[string]any{"id": index, "text": strings.TrimSpace(text)}
+	}
+	inputJSON, err := json.Marshal(items)
+	if err != nil {
+		return nil, err
 	}
 	prompt := "You are a professional subtitle translator. " +
-		"Translate the following English subtitle lines to " + targetLanguage + ". " +
-		"Keep each line's numbering tag [N] exactly as-is. " +
-		"Output ONLY the translated lines, one per original, preserving the [N] tags. " +
-		"Do NOT add any explanation or extra text.\n\n" + strings.TrimSpace(numbered.String())
+		"Translate each English subtitle item to " + targetLanguage + ". " +
+		"Return ONLY valid JSON with this exact shape: {\"translations\":[\"...\"]}. " +
+		"The translations array MUST contain exactly " + strconv.Itoa(len(texts)) + " strings, in the same order as the input items. " +
+		"Do not combine, split, omit, or renumber items. Translate each item independently, even when it is a sentence fragment. " +
+		"Do not add explanations, markdown, numbering, or extra keys.\n\nInput JSON:\n" + string(inputJSON)
 
 	payload := map[string]any{
-		"model":       model,
-		"messages":    []map[string]string{{"role": "user", "content": prompt}},
-		"temperature": 0.3,
-		"max_tokens":  4096,
+		"model":           model,
+		"messages":        []map[string]string{{"role": "user", "content": prompt}},
+		"temperature":     0.0,
+		"max_tokens":      translationMaxTokens(texts),
+		"response_format": map[string]string{"type": "json_object"},
 	}
 	encoded, err := json.Marshal(payload)
 	if err != nil {
@@ -202,16 +209,9 @@ func decodeContent(raw json.RawMessage) (string, error) {
 }
 
 func (c *Client) parseTranslations(reply string, originals []string) []string {
-	reply = strings.TrimSpace(reply)
-	if strings.HasPrefix(reply, "```") {
-		lines := strings.Split(strings.ReplaceAll(reply, "\r\n", "\n"), "\n")
-		if len(lines) > 0 && strings.HasPrefix(strings.TrimSpace(lines[0]), "```") {
-			lines = lines[1:]
-		}
-		if len(lines) > 0 && strings.HasPrefix(strings.TrimSpace(lines[len(lines)-1]), "```") {
-			lines = lines[:len(lines)-1]
-		}
-		reply = strings.Join(lines, "\n")
+	reply = stripCodeFence(reply)
+	if translated, ok := parseJSONTranslations(reply, originals); ok {
+		return translated
 	}
 
 	parsed := make(map[int]string, len(originals))
@@ -249,6 +249,56 @@ func (c *Client) parseTranslations(reply string, originals []string) []string {
 	return translated
 }
 
+func parseJSONTranslations(reply string, originals []string) ([]string, bool) {
+	var object struct {
+		Translations []string `json:"translations"`
+	}
+	if err := json.Unmarshal([]byte(reply), &object); err == nil && len(object.Translations) == len(originals) {
+		return cleanTranslations(object.Translations), true
+	}
+
+	var array []string
+	if err := json.Unmarshal([]byte(reply), &array); err == nil && len(array) == len(originals) {
+		return cleanTranslations(array), true
+	}
+
+	return nil, false
+}
+
+func cleanTranslations(values []string) []string {
+	translated := make([]string, len(values))
+	for index, value := range values {
+		translated[index] = strings.TrimSpace(value)
+	}
+	return translated
+}
+
+func translationMaxTokens(texts []string) int {
+	tokens := 128 + len(texts)*96
+	if tokens < 256 {
+		return 256
+	}
+	if tokens > 4096 {
+		return 4096
+	}
+	return tokens
+}
+
+func stripCodeFence(reply string) string {
+	reply = strings.TrimSpace(reply)
+	if !strings.HasPrefix(reply, "```") {
+		return reply
+	}
+	lines := strings.Split(strings.ReplaceAll(reply, "\r\n", "\n"), "\n")
+	if len(lines) > 0 && strings.HasPrefix(strings.TrimSpace(lines[0]), "```") {
+		lines = lines[1:]
+	}
+	if len(lines) > 0 && strings.HasPrefix(strings.TrimSpace(lines[len(lines)-1]), "```") {
+		lines = lines[:len(lines)-1]
+	}
+	return strings.TrimSpace(strings.Join(lines, "\n"))
+}
+
 func validateAPIBase(base string) error {
 	base = strings.TrimSpace(base)
 	parsed, err := url.Parse(base)
@@ -278,6 +328,9 @@ func (c *Client) setHeaders(request *http.Request) {
 }
 
 func (c *Client) client(timeout time.Duration) *http.Client {
+	if c.RequestTimeout > 0 {
+		timeout = c.RequestTimeout
+	}
 	if c.HTTPClient != nil {
 		clone := *c.HTTPClient
 		if clone.Timeout == 0 {

@@ -29,6 +29,11 @@ func BuildPaths(inputPath, languageCode, explicitOutput string) (Paths, error) {
 
 // BuildPathsForMode creates deterministic paths for the selected complete run mode.
 func BuildPathsForMode(inputPath, languageCode, explicitOutput string, mode config.Mode) (Paths, error) {
+	return BuildPathsForModeOptions(inputPath, languageCode, explicitOutput, mode, false)
+}
+
+// BuildPathsForModeOptions creates deterministic paths for the selected complete run mode and output style.
+func BuildPathsForModeOptions(inputPath, languageCode, explicitOutput string, mode config.Mode, subtitleBurnIn bool) (Paths, error) {
 	absolute, err := filepath.Abs(inputPath)
 	if err != nil {
 		return Paths{}, fmt.Errorf("resolve input path: %w", err)
@@ -45,6 +50,9 @@ func BuildPathsForMode(inputPath, languageCode, explicitOutput string, mode conf
 	}
 	if parsedMode == config.ModeSubtitle {
 		finalSuffix = "subtitled"
+		if subtitleBurnIn {
+			finalSuffix = "burned-in"
+		}
 	}
 	finalVideo := strings.TrimSpace(explicitOutput)
 	if finalVideo == "" {
