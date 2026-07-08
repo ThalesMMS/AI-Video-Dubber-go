@@ -214,3 +214,44 @@ func TestApplyRuntimeSettingsUsesSelectedWhisperModel(t *testing.T) {
 		t.Fatalf("WhisperModel = %q, want small", cfg.WhisperModel)
 	}
 }
+
+func TestNewUIDefaultsRegenerateExistingFilesOff(t *testing.T) {
+	application := fynetest.NewApp()
+	ui := newUI(application, application.NewWindow("test"), t.TempDir())
+
+	if ui.force == nil {
+		t.Fatal("force checkbox was not created")
+	}
+	if ui.force.Checked {
+		t.Fatal("regenerate existing files checkbox defaults to on")
+	}
+}
+
+func TestApplyRunOptionsUsesRegenerateCheckbox(t *testing.T) {
+	force := widget.NewCheck("Regenerate existing files", nil)
+	burnIn := widget.NewCheck("Burn subtitles into video", nil)
+	ui := &ui{force: force, burnIn: burnIn}
+
+	cfg := config.Defaults()
+	ui.applyRunOptions(&cfg, config.ModeDub)
+	if cfg.Force {
+		t.Fatal("Force = true with unchecked regenerate checkbox")
+	}
+
+	force.SetChecked(true)
+	burnIn.SetChecked(true)
+	cfg = config.Defaults()
+	ui.applyRunOptions(&cfg, config.ModeSubtitle)
+	if !cfg.Force {
+		t.Fatal("Force = false with checked regenerate checkbox")
+	}
+	if !cfg.SubtitleBurnIn {
+		t.Fatal("SubtitleBurnIn = false with checked burn-in option in subtitle mode")
+	}
+
+	cfg = config.Defaults()
+	ui.applyRunOptions(&cfg, config.ModeDub)
+	if cfg.SubtitleBurnIn {
+		t.Fatal("SubtitleBurnIn = true in dub mode")
+	}
+}

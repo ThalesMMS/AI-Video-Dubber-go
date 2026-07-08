@@ -69,6 +69,7 @@ type ui struct {
 	whisperModel        *widget.Select
 	mode                *widget.RadioGroup
 	burnIn              *widget.Check
+	force               *widget.Check
 	language            *widget.Select
 	browse              *widget.Button
 	start               *widget.Button
@@ -130,6 +131,7 @@ func newUI(application fyne.App, window fyne.Window, projectDir string) *ui {
 		result.refreshModeControls()
 	})
 	result.burnIn.SetChecked(application.Preferences().Bool("subtitle_burn_in"))
+	result.force = widget.NewCheck("Regenerate existing files", nil)
 
 	result.browse = widget.NewButton("Browse…", result.openFileDialog)
 	result.browse.Importance = widget.HighImportance
@@ -181,7 +183,7 @@ func (u *ui) content() fyne.CanvasObject {
 	whisperRow := formRow("Whisper:", u.whisperModel, nil)
 	speechCard := card(3, "Local speech settings", whisperRow)
 
-	modeCard := card(4, "Choose output mode", container.NewVBox(u.mode, u.burnIn))
+	modeCard := card(4, "Output and run options", container.NewVBox(u.mode, u.burnIn, u.force))
 	languageCard := card(5, "Choose target language", u.language)
 
 	u.stepsBox = container.NewVBox()
@@ -319,8 +321,7 @@ func (u *ui) startPipeline() {
 	cfg.APIBase = apiBase
 	cfg.APIKey = u.apiKey.Text
 	cfg.Model = strings.TrimSpace(u.model.Text)
-	cfg.Force = true
-	cfg.SubtitleBurnIn = runMode == config.ModeSubtitle && u.burnIn != nil && u.burnIn.Checked
+	u.applyRunOptions(&cfg, runMode)
 	u.applyRuntimeSettings(&cfg)
 
 	go func() {
@@ -442,6 +443,9 @@ func (u *ui) setRunning(running bool) {
 		}
 		u.mode.Disable()
 		u.burnIn.Disable()
+		if u.force != nil {
+			u.force.Disable()
+		}
 		u.cancel.SetText("Cancel")
 		u.cancel.Enable()
 	} else {
@@ -452,6 +456,9 @@ func (u *ui) setRunning(running bool) {
 			u.whisperModel.Enable()
 		}
 		u.mode.Enable()
+		if u.force != nil {
+			u.force.Enable()
+		}
 		u.refreshModeControls()
 		u.cancel.SetText("Cancel")
 		u.cancel.Disable()
@@ -470,6 +477,11 @@ func (u *ui) stopCancelFeedbackLocked() {
 		u.cancelFeedbackStop = nil
 	}
 	u.cancelling = false
+}
+
+func (u *ui) applyRunOptions(cfg *config.Config, runMode config.Mode) {
+	cfg.Force = u.force != nil && u.force.Checked
+	cfg.SubtitleBurnIn = runMode == config.ModeSubtitle && u.burnIn != nil && u.burnIn.Checked
 }
 
 func (u *ui) applyRuntimeSettings(cfg *config.Config) {
