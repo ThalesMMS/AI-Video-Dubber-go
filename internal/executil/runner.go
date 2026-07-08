@@ -232,7 +232,7 @@ func lineBreak(data []byte) (int, int) {
 func (w *lineWriter) Tail() string {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return RedactSecrets(string(append([]byte(nil), w.tail...)))
+	return RedactSecrets(strings.ToValidUTF8(string(append([]byte(nil), w.tail...)), ""))
 }
 
 func (w *lineWriter) appendTail(data []byte) {

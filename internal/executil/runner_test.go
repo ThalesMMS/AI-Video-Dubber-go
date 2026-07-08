@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestRequirePreservesLookPathError(t *testing.T) {
@@ -132,6 +133,22 @@ func TestLineWriterFlushesCarriageReturnProgress(t *testing.T) {
 		if lines[index] != want[index] {
 			t.Fatalf("lines[%d] = %q, want %q; all lines=%#v", index, lines[index], want[index], lines)
 		}
+	}
+}
+
+func TestLineWriterTailKeepsValidUTF8AfterByteTruncation(t *testing.T) {
+	writer := newLineWriter(nil, true, 2)
+
+	if _, err := writer.Write([]byte("éx")); err != nil {
+		t.Fatal(err)
+	}
+
+	tail := writer.Tail()
+	if !utf8.ValidString(tail) {
+		t.Fatalf("tail = %q, want valid UTF-8", tail)
+	}
+	if tail != "x" {
+		t.Fatalf("tail = %q, want only complete UTF-8 suffix", tail)
 	}
 }
 
