@@ -2,17 +2,18 @@
 
 Functional clone of `AI-Video-Dubber-py`, reimplemented with **Go** for orchestration, **Fyne** for the graphical interface, and the same AI components used by the original project:
 
-**Video -> audio -> Whisper -> translation -> synchronized Piper TTS -> dubbed video**
+**Video -> audio -> Whisper -> translation -> dubbed video or selectable translated subtitles**
 
 The application provides a dark desktop interface similar to the Python version, a full CLI, and standalone commands for each pipeline stage.
 
 ## Features
 
-- Fyne graphical interface with video selection, API configuration, language selection, six-step progress, logs, and cancellation.
+- Fyne graphical interface with video selection, output mode, API configuration, language selection, mode-specific progress, logs, and cancellation.
 - Audio extraction and remuxing with FFmpeg.
 - Local transcription with OpenAI Whisper.
 - Translation through any OpenAI-compatible API (`/v1/models` and `/v1/chat/completions`).
 - Automatic model detection when the **Model** field is empty.
+- Subtitle mode that writes a translated `.srt` and an MP4 with a selectable subtitle track while preserving the original audio.
 - Local synthesis with Piper TTS and automatic download of the required voice.
 - Subtitle grouping to improve prosody.
 - `length_scale` tuning, bounded `atempo` correction, padding, and trimming per timing window.
@@ -92,8 +93,9 @@ go run ./cmd/ai-video-dubber
 2. Enter the translation API endpoint.
 3. Enter the key when required.
 4. Leave **Model** empty to detect the first model exposed by the API.
-5. Choose the language.
-6. Click **Start Dubbing**.
+5. Choose **Dub** or **Subtitle**.
+6. Choose the language.
+7. Click **Start Dubbing** or **Start Subtitling**.
 
 The GUI always regenerates intermediate files, matching the Python project's interface behavior. The API key is not persisted in application preferences.
 
@@ -103,12 +105,20 @@ The main executable opens the GUI when called without arguments and also provide
 
 ```bash
 ./bin/ai-video-dubber dub --input video.mp4 --language pt-BR
+./bin/ai-video-dubber subtitle --input video.mp4 --language pt-BR
 ```
 
-Default output:
+Default dubbing output:
 
 ```text
 video.pt-BR.synced.mp4
+```
+
+Default subtitle output:
+
+```text
+video.pt-BR.srt
+video.pt-BR.subtitled.mp4
 ```
 
 Example with explicit API and model:
@@ -127,6 +137,7 @@ The headless binary accepts the same subcommands:
 
 ```bash
 ./bin/ai-video-dubber-cli dub --input video.mp4 --language fr
+./bin/ai-video-dubber-cli subtitle --input video.mp4 --language fr
 ```
 
 ### Standalone Stages
@@ -207,6 +218,18 @@ video.txt
 video.pt-BR.srt
 video.pt-BR.synced.mp3
 video.pt-BR.synced.mp4
+```
+
+For `video.mp4` subtitled into `pt-BR`:
+
+```text
+video.mp3
+video.srt
+video.segments.txt
+video.json
+video.txt
+video.pt-BR.srt
+video.pt-BR.subtitled.mp4
 ```
 
 The CLI skips existing intermediate files unless `--force` is used. The final video is always remuxed.

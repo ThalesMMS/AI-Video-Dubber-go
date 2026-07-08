@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -38,6 +39,14 @@ func (c *Client) TranslateFile(ctx context.Context, inputPath, outputPath, targe
 	}
 	if strings.TrimSpace(targetLanguage) == "" {
 		return fmt.Errorf("target language is empty")
+	}
+	inputData, err := os.ReadFile(inputPath)
+	if err != nil {
+		return fmt.Errorf("read SRT %q: %w", inputPath, err)
+	}
+	if strings.TrimSpace(string(inputData)) == "" {
+		c.logf("No subtitle entries in %s; writing empty translated SRT.", inputPath)
+		return srt.WriteFile(outputPath, nil)
 	}
 	cues, err := srt.ReadFile(inputPath)
 	if err != nil {
