@@ -17,6 +17,9 @@ func TestNormalize(t *testing.T) {
 	if cfg.LanguageCode != "pt-BR" || cfg.WhisperModel == "" || cfg.TranslationBatchSize != DefaultBatchSize {
 		t.Fatalf("defaults not applied: %#v", cfg)
 	}
+	if cfg.TranslationParallelism != DefaultTranslationParallelism {
+		t.Fatalf("TranslationParallelism = %d, want %d", cfg.TranslationParallelism, DefaultTranslationParallelism)
+	}
 	if cfg.Mode != ModeDub {
 		t.Fatalf("Mode = %q, want %q", cfg.Mode, ModeDub)
 	}

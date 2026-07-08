@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -230,6 +231,109 @@ func TestTranslateFileRetriesTransientTranslationFailures(t *testing.T) {
 	}
 	if len(cues) != 1 || cues[0].Text != "Um" {
 		t.Fatalf("translated cues = %#v", cues)
+	}
+}
+
+func TestTranslateFileRunsBatchesConcurrentlyInOutputOrder(t *testing.T) {
+	var completionCalls atomic.Int32
+	var inFlight atomic.Int32
+	var maxInFlight atomic.Int32
+	firstBatchStarted := make(chan struct{})
+	secondBatchStarted := make(chan struct{})
+	var closeFirstBatchStarted sync.Once
+	var closeSecondBatchStarted sync.Once
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/v1/chat/completions" {
+			http.NotFound(writer, request)
+			return
+		}
+		current := inFlight.Add(1)
+		for {
+			maximum := maxInFlight.Load()
+			if current <= maximum || maxInFlight.CompareAndSwap(maximum, current) {
+				break
+			}
+		}
+		defer inFlight.Add(-1)
+		completionCalls.Add(1)
+		var payload struct {
+			Messages []struct {
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			http.Error(writer, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if len(payload.Messages) != 1 {
+			http.Error(writer, "missing prompt", http.StatusBadRequest)
+			return
+		}
+		prompt := payload.Messages[0].Content
+		switch {
+		case strings.Contains(prompt, `"text":"One"`):
+			closeFirstBatchStarted.Do(func() { close(firstBatchStarted) })
+			select {
+			case <-secondBatchStarted:
+			case <-time.After(500 * time.Millisecond):
+				writer.Header().Set("Retry-After", "0")
+				http.Error(writer, "second batch did not start concurrently", http.StatusServiceUnavailable)
+				return
+			}
+			_ = json.NewEncoder(writer).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": `{"translations":["Um","Dois"]}`}}}})
+		case strings.Contains(prompt, `"text":"Three"`):
+			select {
+			case <-firstBatchStarted:
+			case <-time.After(500 * time.Millisecond):
+				writer.Header().Set("Retry-After", "0")
+				http.Error(writer, "first batch did not start concurrently", http.StatusServiceUnavailable)
+				return
+			}
+			closeSecondBatchStarted.Do(func() { close(secondBatchStarted) })
+			_ = json.NewEncoder(writer).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": `{"translations":["Tres","Quatro"]}`}}}})
+		default:
+			http.Error(writer, "unexpected prompt", http.StatusBadRequest)
+		}
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	input := filepath.Join(dir, "input.srt")
+	output := filepath.Join(dir, "output.srt")
+	content := strings.Join([]string{
+		"1\n00:00:00,000 --> 00:00:01,000\nOne",
+		"2\n00:00:01,000 --> 00:00:02,000\nTwo",
+		"3\n00:00:02,000 --> 00:00:03,000\nThree",
+		"4\n00:00:03,000 --> 00:00:04,000\nFour",
+		"",
+	}, "\n\n")
+	if err := os.WriteFile(input, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	client := Client{APIBase: server.URL, Model: "test-model", HTTPClient: server.Client()}
+	if err := client.TranslateFile(context.Background(), input, output, "Brazilian Portuguese (pt-BR)", 2); err != nil {
+		t.Fatal(err)
+	}
+	cues, err := srt.ReadFile(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make([]string, len(cues))
+	for index, cue := range cues {
+		got[index] = cue.Text
+	}
+	want := []string{"Um", "Dois", "Tres", "Quatro"}
+	for index := range want {
+		if got[index] != want[index] {
+			t.Fatalf("translated cue %d = %q, want %q; all cues=%#v", index, got[index], want[index], got)
+		}
+	}
+	if completionCalls.Load() != 2 {
+		t.Fatalf("completion calls = %d, want 2", completionCalls.Load())
+	}
+	if maxInFlight.Load() < 2 {
+		t.Fatalf("max in-flight completion requests = %d, want at least 2", maxInFlight.Load())
 	}
 }
 

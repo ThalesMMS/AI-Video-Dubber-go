@@ -27,6 +27,7 @@ const (
 	defaultHTTPRetryBackoff = 500 * time.Millisecond
 	maxHTTPRetryBackoff     = 10 * time.Second
 	resolvedModelCacheTTL   = 5 * time.Minute
+	defaultBatchParallelism = 3
 )
 
 type resolvedModelCacheEntry struct {
@@ -44,12 +45,14 @@ type LogFunc func(string)
 
 // Client calls an OpenAI-compatible /v1 API.
 type Client struct {
-	APIBase        string
-	APIKey         string
-	Model          string
-	RequestTimeout time.Duration
-	HTTPClient     *http.Client
-	Log            LogFunc
+	APIBase          string
+	APIKey           string
+	Model            string
+	RequestTimeout   time.Duration
+	BatchParallelism int
+	HTTPClient       *http.Client
+	Log              LogFunc
+	logMu            sync.Mutex
 }
 
 // Preflight checks that the translation API is reachable before local work starts.
@@ -107,6 +110,43 @@ func (c *Client) TranslateFile(ctx context.Context, inputPath, outputPath, targe
 	c.logf("Parsed %d subtitle entries from %s", len(cues), inputPath)
 	c.logf("Target language: %s", targetLanguage)
 
+	batches := buildTranslationBatches(cues, batchSize)
+	results, err := c.translateBatches(ctx, model, targetLanguage, batches)
+	if err != nil {
+		return err
+	}
+	for _, result := range results {
+		for index, text := range result.Translated {
+			cues[result.Start+index].Text = text
+		}
+	}
+	if err := srt.WriteFile(outputPath, cues); err != nil {
+		return err
+	}
+	c.logf("Done → %s", outputPath)
+	return nil
+}
+
+type translationBatch struct {
+	Index int
+	Start int
+	End   int
+	Texts []string
+}
+
+type translationBatchResult struct {
+	Start      int
+	Translated []string
+}
+
+type translationWorkerResult struct {
+	batch      translationBatch
+	translated []string
+	err        error
+}
+
+func buildTranslationBatches(cues []srt.Cue, batchSize int) []translationBatch {
+	batches := make([]translationBatch, 0, (len(cues)+batchSize-1)/batchSize)
 	for start := 0; start < len(cues); start += batchSize {
 		end := start + batchSize
 		if end > len(cues) {
@@ -116,20 +156,90 @@ func (c *Client) TranslateFile(ctx context.Context, inputPath, outputPath, targe
 		for index := range texts {
 			texts[index] = cues[start+index].Text
 		}
-		c.logf("Translating entries %d–%d of %d...", start+1, end, len(cues))
-		translated, err := c.translateBatch(ctx, model, targetLanguage, texts)
-		if err != nil {
-			return fmt.Errorf("translate subtitle batch %d-%d: %w", start+1, end, err)
+		batches = append(batches, translationBatch{Index: len(batches), Start: start, End: end, Texts: texts})
+	}
+	return batches
+}
+
+func (c *Client) translateBatches(ctx context.Context, model, targetLanguage string, batches []translationBatch) ([]translationBatchResult, error) {
+	if len(batches) == 0 {
+		return nil, nil
+	}
+	parallelism := c.batchParallelism(len(batches))
+	c.logf("Translating %d batch(es) with up to %d concurrent request(s).", len(batches), parallelism)
+
+	stepCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	jobs := make(chan translationBatch)
+	results := make(chan translationWorkerResult, len(batches))
+	var workers sync.WaitGroup
+	for worker := 0; worker < parallelism; worker++ {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for batch := range jobs {
+				if stepCtx.Err() != nil {
+					return
+				}
+				c.logf("Translating entries %d–%d of %d...", batch.Start+1, batch.End, batches[len(batches)-1].End)
+				translated, err := c.translateBatch(stepCtx, model, targetLanguage, batch.Texts)
+				results <- translationWorkerResult{batch: batch, translated: translated, err: err}
+				if err != nil {
+					return
+				}
+			}
+		}()
+	}
+
+	go func() {
+		defer close(jobs)
+		for _, batch := range batches {
+			select {
+			case <-stepCtx.Done():
+				return
+			case jobs <- batch:
+			}
 		}
-		for index, text := range translated {
-			cues[start+index].Text = text
+	}()
+	go func() {
+		workers.Wait()
+		close(results)
+	}()
+
+	ordered := make([]translationBatchResult, len(batches))
+	var firstErr error
+	for result := range results {
+		if result.err != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("translate subtitle batch %d-%d: %w", result.batch.Start+1, result.batch.End, result.err)
+				cancel()
+			}
+			continue
+		}
+		ordered[result.batch.Index] = translationBatchResult{
+			Start:      result.batch.Start,
+			Translated: result.translated,
 		}
 	}
-	if err := srt.WriteFile(outputPath, cues); err != nil {
-		return err
+	if firstErr != nil {
+		return nil, firstErr
 	}
-	c.logf("Done → %s", outputPath)
-	return nil
+	return ordered, nil
+}
+
+func (c *Client) batchParallelism(batchCount int) int {
+	parallelism := c.BatchParallelism
+	if parallelism <= 0 {
+		parallelism = defaultBatchParallelism
+	}
+	if parallelism > batchCount {
+		parallelism = batchCount
+	}
+	if parallelism < 1 {
+		return 1
+	}
+	return parallelism
 }
 
 func (c *Client) resolveModel(ctx context.Context) (string, error) {
@@ -550,7 +660,10 @@ func sleepContext(ctx context.Context, delay time.Duration) error {
 
 func (c *Client) logf(format string, args ...any) {
 	if c.Log != nil {
-		c.Log(fmt.Sprintf(format, args...))
+		line := fmt.Sprintf(format, args...)
+		c.logMu.Lock()
+		defer c.logMu.Unlock()
+		c.Log(line)
 	}
 }
 

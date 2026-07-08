@@ -117,6 +117,7 @@ func parseCompleteRunConfig(name string, args []string, mode config.Mode) (confi
 	python := set.String("python", defaults.PythonBin, "system Python executable")
 	venv := set.String("venv", os.Getenv("VENV_DIR"), "Python virtual environment directory")
 	batch := set.Int("batch-size", defaults.TranslationBatchSize, "subtitles per translation request")
+	translationParallelism := set.Int("translation-parallelism", defaults.TranslationParallelism, "concurrent translation batch requests")
 	translationTimeout := set.Duration("translation-timeout", defaults.TranslationTimeout, "translation API request timeout")
 	force := set.Bool("force", false, "regenerate intermediate files")
 	dataDir := defaults.VoiceDataDir
@@ -164,6 +165,7 @@ func parseCompleteRunConfig(name string, args []string, mode config.Mode) (confi
 	cfg.VoiceDataDir = dataDir
 	cfg.SubtitleBurnIn = subtitleBurnIn
 	cfg.TranslationBatchSize = *batch
+	cfg.TranslationParallelism = *translationParallelism
 	cfg.TranslationTimeout = *translationTimeout
 	cfg.Force = *force
 	cfg.KeepTemp = keepTemp
@@ -230,6 +232,7 @@ func runTranslate(ctx context.Context, args []string) error {
 	apiKey := set.String("api-key", envOr("LLM_API_KEY", defaults.APIKey), "API key")
 	model := set.String("model", os.Getenv("LLM_MODEL"), "LLM model (blank auto-detects)")
 	batch := set.Int("batch-size", defaults.TranslationBatchSize, "subtitles per request")
+	translationParallelism := set.Int("translation-parallelism", defaults.TranslationParallelism, "concurrent translation batch requests")
 	translationTimeout := set.Duration("translation-timeout", defaults.TranslationTimeout, "translation API request timeout")
 	if err := set.Parse(args); err != nil {
 		return err
@@ -244,7 +247,7 @@ func runTranslate(ctx context.Context, args []string) error {
 	if *output == "" {
 		*output = strings.TrimSuffix(*input, filepath.Ext(*input)) + "." + lang.Code + ".srt"
 	}
-	client := translation.Client{APIBase: *apiBase, APIKey: *apiKey, Model: *model, RequestTimeout: *translationTimeout, Log: func(line string) { fmt.Println(line) }}
+	client := translation.Client{APIBase: *apiBase, APIKey: *apiKey, Model: *model, RequestTimeout: *translationTimeout, BatchParallelism: *translationParallelism, Log: func(line string) { fmt.Println(line) }}
 	return client.TranslateFile(ctx, *input, *output, lang.TranslationName, *batch)
 }
 

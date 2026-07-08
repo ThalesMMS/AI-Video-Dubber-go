@@ -12,12 +12,13 @@ import (
 )
 
 const (
-	DefaultAPIBase            = "http://localhost:8000"
-	DefaultAPIKey             = "apikey"
-	DefaultWhisperModel       = "large-v3"
-	DefaultSourceLanguage     = "en"
-	DefaultBatchSize          = 15
-	DefaultTranslationTimeout = 120 * time.Second
+	DefaultAPIBase                = "http://localhost:8000"
+	DefaultAPIKey                 = "apikey"
+	DefaultWhisperModel           = "large-v3"
+	DefaultSourceLanguage         = "en"
+	DefaultBatchSize              = 15
+	DefaultTranslationParallelism = 3
+	DefaultTranslationTimeout     = 120 * time.Second
 )
 
 // Mode selects which final artifact the complete pipeline creates.
@@ -30,25 +31,26 @@ const (
 
 // Config configures a complete dubbing run.
 type Config struct {
-	Mode                 Mode
-	InputPath            string
-	OutputPath           string
-	LanguageCode         string
-	APIBase              string
-	APIKey               string
-	Model                string
-	WhisperModel         string
-	SourceLanguage       string
-	PythonBin            string
-	VenvDir              string
-	FFmpegBin            string
-	FFprobeBin           string
-	VoiceDataDir         string
-	Force                bool
-	KeepTemp             bool
-	SubtitleBurnIn       bool
-	TranslationBatchSize int
-	TranslationTimeout   time.Duration
+	Mode                   Mode
+	InputPath              string
+	OutputPath             string
+	LanguageCode           string
+	APIBase                string
+	APIKey                 string
+	Model                  string
+	WhisperModel           string
+	SourceLanguage         string
+	PythonBin              string
+	VenvDir                string
+	FFmpegBin              string
+	FFprobeBin             string
+	VoiceDataDir           string
+	Force                  bool
+	KeepTemp               bool
+	SubtitleBurnIn         bool
+	TranslationBatchSize   int
+	TranslationParallelism int
+	TranslationTimeout     time.Duration
 }
 
 // BundledResources describes the relocatable tools shipped beside a binary.
@@ -62,19 +64,20 @@ type BundledResources struct {
 // Defaults returns platform-aware defaults.
 func Defaults() Config {
 	return Config{
-		Mode:                 ModeDub,
-		LanguageCode:         "pt-BR",
-		APIBase:              DefaultAPIBase,
-		APIKey:               DefaultAPIKey,
-		WhisperModel:         DefaultWhisperModel,
-		SourceLanguage:       DefaultSourceLanguage,
-		PythonBin:            defaultPython(),
-		FFmpegBin:            defaultTool("ffmpeg"),
-		FFprobeBin:           defaultTool("ffprobe"),
-		VoiceDataDir:         defaultVoiceDataDir(),
-		Force:                false,
-		TranslationBatchSize: DefaultBatchSize,
-		TranslationTimeout:   DefaultTranslationTimeout,
+		Mode:                   ModeDub,
+		LanguageCode:           "pt-BR",
+		APIBase:                DefaultAPIBase,
+		APIKey:                 DefaultAPIKey,
+		WhisperModel:           DefaultWhisperModel,
+		SourceLanguage:         DefaultSourceLanguage,
+		PythonBin:              defaultPython(),
+		FFmpegBin:              defaultTool("ffmpeg"),
+		FFprobeBin:             defaultTool("ffprobe"),
+		VoiceDataDir:           defaultVoiceDataDir(),
+		Force:                  false,
+		TranslationBatchSize:   DefaultBatchSize,
+		TranslationParallelism: DefaultTranslationParallelism,
+		TranslationTimeout:     DefaultTranslationTimeout,
 	}
 }
 
@@ -122,6 +125,9 @@ func (c Config) Normalize(projectDir string) Config {
 	}
 	if c.TranslationBatchSize <= 0 {
 		c.TranslationBatchSize = defaults.TranslationBatchSize
+	}
+	if c.TranslationParallelism <= 0 {
+		c.TranslationParallelism = defaults.TranslationParallelism
 	}
 	if c.TranslationTimeout <= 0 {
 		c.TranslationTimeout = defaults.TranslationTimeout

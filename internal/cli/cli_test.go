@@ -24,6 +24,7 @@ func TestParseCompleteRunConfigSetsSubtitleMode(t *testing.T) {
 		"--source-language", "en",
 		"--python", "python3",
 		"--venv", filepath.Join(projectDir, ".venv"),
+		"--translation-parallelism", "2",
 		"--burn-in",
 		"--force",
 	}, config.ModeSubtitle)
@@ -38,6 +39,9 @@ func TestParseCompleteRunConfigSetsSubtitleMode(t *testing.T) {
 	}
 	if cfg.APIBase != "http://localhost:9000" || cfg.APIKey != "secret" || cfg.Model != "translator" {
 		t.Fatalf("unexpected translation config: %#v", cfg)
+	}
+	if cfg.TranslationParallelism != 2 {
+		t.Fatalf("TranslationParallelism = %d, want 2", cfg.TranslationParallelism)
 	}
 	if cfg.WhisperModel != "small" || cfg.SourceLanguage != "en" || !cfg.Force {
 		t.Fatalf("unexpected runtime config: %#v", cfg)

@@ -168,7 +168,7 @@ func (p Pipeline) Run(ctx context.Context, rawConfig config.Config) (Result, err
 	translationModel := cfg.Model
 	if translateWillRun {
 		p.log("Checking translation API connectivity...")
-		client := translation.Client{APIBase: cfg.APIBase, APIKey: cfg.APIKey, Model: translationModel, RequestTimeout: cfg.TranslationTimeout, Log: p.log}
+		client := translation.Client{APIBase: cfg.APIBase, APIKey: cfg.APIKey, Model: translationModel, RequestTimeout: cfg.TranslationTimeout, BatchParallelism: cfg.TranslationParallelism, Log: p.log}
 		model, err := client.Preflight(ctx)
 		if err != nil {
 			return fail(StepTranslate, fmt.Errorf("translation API preflight: %w", err))

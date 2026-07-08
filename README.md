@@ -158,11 +158,12 @@ Example with explicit API and model:
   --api-key apikey \
   --model my-model \
   --batch-size 10 \
+  --translation-parallelism 3 \
   --translation-timeout 10m \
   --force
 ```
 
-`--batch-size` controls how many subtitle cues are translated per API request. `--translation-timeout` defaults to `120s`; increase it for slower local OpenAI-compatible models.
+`--batch-size` controls how many subtitle cues are translated per API request. `--translation-parallelism` controls how many translation batches may run at once; set it to `1` for serial requests against strict rate limits. `--translation-timeout` defaults to `120s`; increase it for slower local OpenAI-compatible models.
 
 The headless binary accepts the same subcommands:
 
@@ -188,6 +189,7 @@ The headless binary accepts the same subcommands:
   --language pt-BR \
   --api-base http://localhost:8000 \
   --batch-size 10 \
+  --translation-parallelism 3 \
   --translation-timeout 10m
 
 # 4. SRT/segments -> synchronized audio
