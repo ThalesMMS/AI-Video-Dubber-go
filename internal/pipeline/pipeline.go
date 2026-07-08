@@ -233,14 +233,21 @@ func (p Pipeline) Run(ctx context.Context, rawConfig config.Config) (Result, err
 	if cfg.Mode == config.ModeSubtitle {
 		current = StepSynthesize
 		p.begin(current)
-		var err error
-		if cfg.SubtitleBurnIn {
-			err = audio.BurnInSubtitles(ctx, runner, paths.Input, paths.TranslatedSRT, paths.FinalVideo)
-		} else {
-			err = audio.EmbedSubtitles(ctx, runner, paths.Input, paths.TranslatedSRT, paths.FinalVideo)
-		}
+		runStep, err = shouldRun(cfg.Force, paths.FinalVideo)
 		if err != nil {
 			return fail(current, err)
+		}
+		if runStep {
+			if cfg.SubtitleBurnIn {
+				err = audio.BurnInSubtitles(ctx, runner, paths.Input, paths.TranslatedSRT, paths.FinalVideo)
+			} else {
+				err = audio.EmbedSubtitles(ctx, runner, paths.Input, paths.TranslatedSRT, paths.FinalVideo)
+			}
+			if err != nil {
+				return fail(current, err)
+			}
+		} else {
+			p.log("Skipped: final video already exists. Use --force to regenerate it.")
 		}
 		p.finish(current)
 
@@ -271,8 +278,16 @@ func (p Pipeline) Run(ctx context.Context, rawConfig config.Config) (Result, err
 
 	current = StepMerge
 	p.begin(current)
-	if err := audio.MergeVideoAudio(ctx, runner, paths.Input, paths.SyncedAudio, paths.FinalVideo); err != nil {
+	runStep, err = shouldRun(cfg.Force, paths.FinalVideo)
+	if err != nil {
 		return fail(current, err)
+	}
+	if runStep {
+		if err := audio.MergeVideoAudio(ctx, runner, paths.Input, paths.SyncedAudio, paths.FinalVideo); err != nil {
+			return fail(current, err)
+		}
+	} else {
+		p.log("Skipped: final video already exists. Use --force to regenerate it.")
 	}
 	p.finish(current)
 

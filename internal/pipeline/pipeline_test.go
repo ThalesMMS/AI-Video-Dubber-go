@@ -7,9 +7,11 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
+	"github.com/ai-video-dubber/ai-video-dubber-go/internal/audio"
 	"github.com/ai-video-dubber/ai-video-dubber-go/internal/config"
 )
 
@@ -170,5 +172,84 @@ func TestRunPreflightsTranslationAPIBeforeLocalSetup(t *testing.T) {
 	}
 	if joined := strings.Join(observer.lines, "\n"); !strings.Contains(joined, "Checking translation API connectivity") {
 		t.Fatalf("preflight log missing:\n%s", joined)
+	}
+}
+
+func TestRunSkipsExistingFinalSubtitleVideo(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script test")
+	}
+	dir := t.TempDir()
+	python := filepath.Join(dir, "python")
+	pythonScript := `#!/bin/sh
+if [ "$1" = "-c" ]; then
+  case "$2" in
+    *version_info*) printf '3.11\n' ;;
+  esac
+fi
+exit 0
+`
+	if err := os.WriteFile(python, []byte(pythonScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	venvDir := filepath.Join(dir, "venv")
+	venvPython := config.VenvPython(venvDir)
+	if err := os.MkdirAll(filepath.Dir(venvPython), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(venvPython, []byte(pythonScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ffmpegCalled := filepath.Join(dir, "ffmpeg-called")
+	t.Setenv("FFMPEG_CALLED", ffmpegCalled)
+	ffmpeg := filepath.Join(dir, "ffmpeg")
+	if err := os.WriteFile(ffmpeg, []byte(`#!/bin/sh
+printf called > "$FFMPEG_CALLED"
+exit 1
+`), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ffprobe := filepath.Join(dir, "ffprobe")
+	if err := os.WriteFile(ffprobe, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	input := filepath.Join(dir, "video.mp4")
+	if err := os.WriteFile(input, []byte("video"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	paths, err := audio.BuildPathsForMode(input, "pt-BR", "", config.ModeSubtitle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for path, data := range map[string]string{
+		paths.ExtractedAudio: "audio",
+		paths.TranscriptSRT:  "1\n00:00:00,000 --> 00:00:01,000\nOne\n",
+		paths.TranslatedSRT:  "1\n00:00:00,000 --> 00:00:01,000\nUm\n",
+		paths.FinalVideo:     "existing final video",
+	} {
+		if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	observer := &recordingObserver{}
+	_, err = (Pipeline{ProjectDir: dir, Observer: observer}).Run(context.Background(), config.Config{
+		Mode:         config.ModeSubtitle,
+		InputPath:    input,
+		LanguageCode: "pt-BR",
+		APIBase:      "http://127.0.0.1:1",
+		PythonBin:    python,
+		VenvDir:      venvDir,
+		FFmpegBin:    ffmpeg,
+		FFprobeBin:   ffprobe,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(ffmpegCalled); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("ffmpeg marker stat = %v, want not called", err)
+	}
+	if joined := strings.Join(observer.lines, "\n"); !strings.Contains(joined, "Skipped: final video already exists") {
+		t.Fatalf("final skip log missing:\n%s", joined)
 	}
 }
